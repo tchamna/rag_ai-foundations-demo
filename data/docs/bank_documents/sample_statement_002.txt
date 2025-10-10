@@ -1,0 +1,9 @@
+STATEMENT (Sample: July 2024)
+Account: Savings • Ending Balance: $5,430.10
+
+Transactions:
+07/01 Deposit +$1,000.00
+07/05 Interest +$5.10
+07/10 Withdrawal -$500.00
+07/20 Transfer to Checking -$200.00
+07/25 Amazon Purchase -$75.50
