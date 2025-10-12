@@ -201,11 +201,42 @@ def build_documents(corpus: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 class VectorIndex:
     def __init__(self, embedding_model: str = EMBEDDING_MODEL):
-        self.embedder = SentenceTransformer(embedding_model)
+        # Delay heavy model initialization until actually needed. Some
+        # deployment environments (Streamlit Cloud) provide torch in a
+        # configuration that causes module.to(device) to raise
+        # NotImplementedError during construction. To avoid crashing the
+        # app at import/startup, keep embedder None and initialize lazily
+        # inside _embed() with a safe device fallback.
+        self.embedding_model = embedding_model
+        self.embedder = None
         self.index = None
         self.docs: List[Dict[str, Any]] = []
 
     def _embed(self, texts: List[str]) -> np.ndarray:
+        # Lazy-load the SentenceTransformer only when embeddings are needed.
+        if self.embedder is None:
+            device = "cpu"
+            try:
+                import torch
+                if getattr(torch, "cuda", None) and torch.cuda.is_available():
+                    device = "cuda"
+                elif getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+                    device = "mps"
+            except Exception:
+                device = "cpu"
+
+            try:
+                # Pass device explicitly; if this fails, try a CPU-only load.
+                self.embedder = SentenceTransformer(self.embedding_model, device=device)
+            except Exception as e:
+                print(f"Warning: failed to load SentenceTransformer on device={device}: {e}. Falling back to CPU.")
+                try:
+                    self.embedder = SentenceTransformer(self.embedding_model, device="cpu")
+                except Exception as e2:
+                    # If even CPU load fails, raise a clear error so caller can
+                    # handle it (the app can catch this and present a message).
+                    raise RuntimeError(f"Could not load embedding model '{self.embedding_model}': {e2}") from e2
+
         return self.embedder.encode(texts, show_progress_bar=False, normalize_embeddings=True)
 
     def build(self, docs: List[Dict[str, Any]]):
