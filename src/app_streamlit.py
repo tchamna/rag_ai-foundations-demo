@@ -1,16 +1,21 @@
 import streamlit as st
 from pathlib import Path
 import pandas as pd
+import pickle
 
 from rag_pipeline import RAGPipeline, load_corpus, build_documents, VectorIndex
-from config import DATA_DIR, VECTORSTORE_DIR, TOP_K
+from config import DATA_DIR, VECTORSTORE_DIR, TOP_K, SIM_THRESHOLD
 
+# -------------------------
+# Page Setup
+# -------------------------
 st.set_page_config(page_title="Banking & Fe'efe'e Assistant (RAG Demo)", layout="wide")
-
 st.title("🏦 Banking & Fe'efe'e Assistant — RAG Demo")
-st.caption("Local demo: FAISS + SentenceTransformers + FLAN-T5 | Upload statements and ask questions.")
+st.caption("Demo with FAISS + SentenceTransformers + FLAN-T5 or ChatGPT | Upload docs and ask questions.")
 
-# Sidebar — Build / Rebuild index
+# -------------------------
+# Sidebar — Index Builder
+# -------------------------
 st.sidebar.header("Index Builder")
 rebuild = st.sidebar.button("Rebuild Vector Store")
 status = st.sidebar.empty()
@@ -27,29 +32,42 @@ def rebuild_index():
 if rebuild:
     rebuild_index()
 
+# -------------------------
 # Sidebar — Upload
-st.sidebar.header("Upload Statement")
+# -------------------------
+st.sidebar.header("Upload Document")
 upload = st.sidebar.file_uploader("Upload .txt, .csv or .xlsx", type=["txt","csv","xlsx"])
 if upload:
-    target_dir = DATA_DIR / "sample_statements"
+    target_dir = DATA_DIR / "user_uploads"
     target_dir.mkdir(parents=True, exist_ok=True)
-    target = target_dir / f"user_{upload.name}"
+    target = target_dir / upload.name
     target.write_bytes(upload.getvalue())
     st.sidebar.success(f"Saved: {target.name}")
     st.sidebar.info("Click 'Rebuild Vector Store' to include this in retrieval.")
 
-# Sidebar — Similarity Threshold
+# -------------------------
+# Sidebar — Retrieval Settings
+# -------------------------
 st.sidebar.header("Retrieval Settings")
 threshold = st.sidebar.slider(
-    "Similarity threshold (filter weak matches)", 
-    min_value=0.0, max_value=1.0, value=0.25, step=0.05
+    "Similarity threshold", 0.0, 1.0, SIM_THRESHOLD, 0.05
 )
 
-# Save transcript
+# -------------------------
+# Sidebar — Choose Generator
+# -------------------------
+st.sidebar.header("Answer Generator")
+use_chatgpt = st.sidebar.checkbox("Use ChatGPT API instead of FLAN-T5", value=False)
+
+# -------------------------
+# Session State
+# -------------------------
 if "transcript" not in st.session_state:
     st.session_state["transcript"] = []
 
+# -------------------------
 # Post-processor for citations
+# -------------------------
 def enforce_citations(answer: str, contexts):
     if not contexts:
         return answer
@@ -58,106 +76,197 @@ def enforce_citations(answer: str, contexts):
         answer += " " + " ".join(numbers)
     return answer
 
-# -------------------- Main Q&A --------------------
+# -------------------------
+# Main — Q&A
+# -------------------------
 st.subheader("Ask a question")
+query = st.text_input(
+    "e.g., What is the ATM withdrawal limit? How to say 'I love you' in Fe'efe'e?"
+)
 
-with st.form(key="qa_form"):
-    query = st.text_input(
-        "e.g., What recurring charges do I have in May? How do I avoid overdraft fees?"
-    )
-    submitted = st.form_submit_button("Get Answer")
+# Both Enter and Button trigger
+trigger = st.button("Get Answer") or (
+    query.strip() and st.session_state.get("last_query") != query.strip()
+)
 
-if submitted and query.strip():
-    try:
-        rag = RAGPipeline(VECTORSTORE_DIR)
-        rag.ensure_loaded()
+col1, col2 = st.columns([2, 1])
 
-        # Retrieve and apply threshold filter
-        raw_ctxs = rag.retrieve(query.strip(), TOP_K)
-        ctxs = [c for c in raw_ctxs if c["score"] >= threshold]
+with col1:
+    if trigger and query.strip():
+        try:
+            # rag = RAGPipeline(VECTORSTORE_DIR, use_chatgpt=use_chatgpt)
+            rag = RAGPipeline(
+            VECTORSTORE_DIR,
+            use_chatgpt=use_chatgpt,
+            use_reranker=True,               # keep reranker enabled
+            refine_phrasebook_with_gpt=False # disable GPT polishing of phrasebook hits
+            # refine_phrasebook_with_gpt=True # disable GPT polishing of phrasebook hits
+                )
 
-        if not ctxs:
-            fixed_answer = "I could not find this in the documents."
-            result = {"prompt": f"No contexts >= {threshold}"}
-        else:
-            result = rag.answer(query.strip(), ctxs)
-            fixed_answer = result["answer"]
+            rag.ensure_loaded()
 
-        st.markdown("### Answer")
-        st.write(fixed_answer)
+            if use_chatgpt:
+                st.info("⚡ Using ChatGPT API for generation")
+            else:
+                st.info("🧠 Using local FLAN-T5 model")
 
-        # Save transcript
-        st.session_state["transcript"].append({
-            "question": query.strip(),
-            "answer": fixed_answer,
-            "contexts": ctxs
-        })
+            # Retrieve and apply similarity threshold. If threshold filters out
+            # all candidates, fall back to the top-k retrieved chunks so the
+            # generator still has something to work with (better UX than
+            # returning no answer when low-scoring but relevant chunks exist).
+            retrieved = rag.retrieve(query.strip(), TOP_K)
+            ctxs = [c for c in retrieved if c.get("score", 0.0) >= threshold]
 
-        if ctxs:
-            with st.expander("Show prompt (debug)"):
-                st.code(result["prompt"], language="text")
+            # Fallback: if similarity threshold removed everything but we did
+            # retrieve items, use the top-k retrieved (and warn the user).
+            if not ctxs and retrieved:
+                st.warning(
+                    "No chunks passed the similarity threshold — falling back to the top retrieved chunks.\n"
+                    "Consider lowering the 'Similarity threshold' in the sidebar if you want stricter filtering."
+                )
+                ctxs = retrieved[:TOP_K]
 
-    except FileNotFoundError as e:
-        st.error(str(e))
-        st.info("Use the sidebar to build the vector store first.")
+            if not ctxs:
+                fixed_answer = "I could not find this in the documents."
+                result = {"prompt": "No contexts found."}
+            else:
+                result = rag.answer(query.strip(), ctxs)
+                
+                mode = result.get("mode", "")
+                if mode in ("gpt", "phrasebook+gpt"):
+                    st.info("⚡ Using ChatGPT API for generation")
+                elif mode == "flan":
+                    st.info("🧠 Using local FLAN-T5 model")
+                elif mode == "faq":
+                    st.success("✅ Direct FAQ match (no generator)")
+                elif mode == "phrasebook":
+                    st.success("✅ Direct phrasebook match (no generator)")
+                elif mode == "fallback":
+                    st.warning("↩️ Fallback to top chunk text")
+                    
+                fixed_answer = result["answer"]
 
-# -------------------- Retrieved Chunks --------------------
-st.subheader("Retrieved Chunks")
-if query.strip():
-    try:
-        rag = RAGPipeline(VECTORSTORE_DIR)
-        rag.ensure_loaded()
-        ctxs = rag.retrieve(query.strip(), TOP_K)
-        for i, c in enumerate(ctxs, 1):
-            if c["score"] >= threshold:  # ✅ respect threshold
-                with st.expander(f"🔎 Chunk {i} — {c['meta']['source']} (score={c['score']:.3f})", expanded=False):
-                    parts = [p.strip() for p in c["text"].split("|")]
-                    if len(parts) == 3:
-                        st.markdown(f"**English:** {parts[0]}")
-                        st.markdown(f"**Fè’éfě’è:** {parts[1]}")
-                        st.markdown(f"**French:** {parts[2]}")
-                    else:
-                        st.text(c["text"])
-    except Exception:
-        st.caption("⚠️ Build the index to preview retrieved chunks.")
+            st.markdown("### Answer")
+            st.write(fixed_answer)
 
-# -------------------- Transcript Download --------------------
-if st.session_state.get("transcript"):
-    st.subheader("Download Q&A Transcript")
+            # Save transcript with contexts
+            st.session_state["transcript"].append({
+                "question": query.strip(),
+                "answer": fixed_answer,
+                "contexts": [
+                    {
+                        "source": c["meta"]["source"],
+                        "text": c["text"],
+                        "score": c.get("score", None)
+                    }
+                    for c in ctxs
+                ]
+            })
 
-    rows = []
-    for i, item in enumerate(st.session_state["transcript"], 1):
-        q = item.get("question", "")
-        a = item.get("answer", "")
-        ctxs = item.get("contexts", [])
+            st.session_state["last_query"] = query.strip()
 
-        if ctxs:
-            for ctx in ctxs:
+            if ctxs:
+                with st.expander("Show prompt (debug)"):
+                    st.code(result["prompt"], language="text")
+
+        except FileNotFoundError as e:
+            st.error(str(e))
+            st.info("Use the sidebar to build the vector store first.")
+
+    # -------------------------
+    # Transcript Download
+    # -------------------------
+    if st.session_state.get("transcript"):
+        st.subheader("Download Q&A Transcript")
+
+        rows = []
+        for i, item in enumerate(st.session_state["transcript"], 1):
+            q = item.get("question", "")
+            a = item.get("answer", "")
+            ctxs = item.get("contexts", [])
+
+            if ctxs:
+                for ctx in ctxs:
+                    rows.append({
+                        "Q#": i,
+                        "Question": q,
+                        "Answer": a,
+                        "Source": ctx.get("source", "N/A"),
+                        "Chunk Text": ctx.get("text", "N/A"),
+                        "Score": ctx.get("score", None)
+                    })
+            else:
                 rows.append({
                     "Q#": i,
                     "Question": q,
                     "Answer": a,
-                    "Source": ctx.get("source", "N/A"),
-                    "Chunk Text": ctx.get("text", "N/A"),
-                    "Score": ctx.get("score", None)
+                    "Source": "N/A",
+                    "Chunk Text": "N/A",
+                    "Score": None
                 })
+
+        df = pd.DataFrame(rows)
+        csv = df.to_csv(index=False, encoding="utf-8-sig")
+
+        st.download_button(
+            "📥 Download Transcript (CSV)",
+            csv,
+            "qa_transcript.csv",
+            "text/csv",
+            key="download-csv"
+        )
+
+with col2:
+    st.markdown("### Retrieved Chunks")
+    try:
+        # rag = RAGPipeline(VECTORSTORE_DIR, use_chatgpt=use_chatgpt)
+        rag = RAGPipeline(
+        VECTORSTORE_DIR,
+        use_chatgpt=use_chatgpt,
+        use_reranker=True,               # keep reranker enabled
+        refine_phrasebook_with_gpt=False # disable GPT polishing of phrasebook hits
+            )
+
+        rag.ensure_loaded()
+        ctxs = rag.retrieve(query if query.strip() else "introductions", TOP_K)
+        for i, c in enumerate(ctxs, 1):
+            with st.expander(
+                f"🔎 Chunk {i} — {c['meta']['source']} (score={c['score']:.3f})",
+                expanded=False
+            ):
+                parts = [p.strip() for p in c["text"].split("|")]
+                if len(parts) == 3:
+                    st.markdown(f"**English:** {parts[0]}")
+                    st.markdown(f"**Fè’éfě’è:** {parts[1]}")
+                    st.markdown(f"**French:** {parts[2]}")
+                else:
+                    st.text(c["text"])
+    except Exception:
+        st.caption("⚠️ Build the index to preview retrieved chunks.")
+
+# -------------------------
+# Sidebar — Vector DB Browser
+# -------------------------
+st.sidebar.header("🔎 Vector DB Browser")
+
+if st.sidebar.checkbox("Enable Browser"):
+    try:
+        with open(VECTORSTORE_DIR / "docs.pkl", "rb") as f:
+            docs = pickle.load(f)
+        st.sidebar.success(f"✅ Loaded {len(docs)} chunks")
+
+        search_term = st.sidebar.text_input("Search chunks (optional)")
+        if search_term:
+            filtered_docs = [d for d in docs if search_term.lower() in d["text"].lower()]
+            st.sidebar.write(f"Found {len(filtered_docs)} matching chunks")
         else:
-            rows.append({
-                "Q#": i,
-                "Question": q,
-                "Answer": a,
-                "Source": "N/A",
-                "Chunk Text": "N/A",
-                "Score": None
-            })
+            filtered_docs = docs
 
-    df = pd.DataFrame(rows)
-    csv = df.to_csv(index=False, encoding="utf-8-sig")
+        max_show = st.sidebar.slider("How many to display?", 5, 50, 10)
 
-    st.download_button(
-        "📥 Download Transcript (CSV)",
-        csv,
-        "qa_transcript.csv",
-        "text/csv",
-        key="download-csv"
-    )
+        for i, d in enumerate(filtered_docs[:max_show]):
+            with st.expander(f"Chunk {i+1} — {d['meta'].get('source','N/A')}"):
+                st.text(d["text"])
+
+    except Exception as e:
+        st.sidebar.error(f"Could not load docs.pkl: {e}")

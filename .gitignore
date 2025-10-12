@@ -6,6 +6,7 @@ __pycache__/
 .venv/
 env/
 venv/
+*.env
 
 # Data
 # vectorstore/
@@ -18,3 +19,4 @@ data/*.zip
 # IDE
 .vscode/
 .idea/
+.streamlit/
