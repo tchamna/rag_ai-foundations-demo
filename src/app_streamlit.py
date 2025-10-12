@@ -1,10 +1,9 @@
 import streamlit as st
 from pathlib import Path
 import pandas as pd
-import re
 
 from rag_pipeline import RAGPipeline, load_corpus, build_documents, VectorIndex
-from config import DATA_DIR, VECTORSTORE_DIR, TOP_K, SIM_THRESHOLD
+from config import DATA_DIR, VECTORSTORE_DIR, TOP_K
 
 st.set_page_config(page_title="Banking & Fe'efe'e Assistant (RAG Demo)", layout="wide")
 
@@ -52,7 +51,6 @@ if "transcript" not in st.session_state:
 
 # Post-processor for citations
 def enforce_citations(answer: str, contexts):
-    # Do not add citations if no contexts
     if not contexts:
         return answer
     numbers = [f"[{i+1}]" for i in range(len(contexts))]
@@ -60,76 +58,106 @@ def enforce_citations(answer: str, contexts):
         answer += " " + " ".join(numbers)
     return answer
 
-# Main — Q&A
+# -------------------- Main Q&A --------------------
 st.subheader("Ask a question")
-query = st.text_input("e.g., What recurring charges do I have in May? How do I avoid overdraft fees?")
 
-col1, col2 = st.columns([2,1])
+with st.form(key="qa_form"):
+    query = st.text_input(
+        "e.g., What recurring charges do I have in May? How do I avoid overdraft fees?"
+    )
+    submitted = st.form_submit_button("Get Answer")
 
-with col1:
-    if st.button("Get Answer") and query.strip():
-        try:
-            rag = RAGPipeline(VECTORSTORE_DIR)
-            rag.ensure_loaded()
-
-            # Retrieve with threshold
-            ctxs = [c for c in rag.retrieve(query.strip(), TOP_K) if c["score"] >= SIM_THRESHOLD]
-
-            if not ctxs:
-                fixed_answer = "I could not find this in the documents."
-                result = {"prompt": "No contexts found after applying similarity threshold."}
-            else:
-                # ✅ pass contexts into answer
-                result = rag.answer(query.strip(), ctxs)
-                fixed_answer = result["answer"]
-
-            st.markdown("### Answer")
-            st.write(fixed_answer)
-
-            # Save transcript
-            st.session_state["transcript"].append({
-                "question": query.strip(),
-                "answer": fixed_answer,
-                "sources": [c["meta"]["source"] for c in ctxs]
-            })
-
-            if ctxs:
-                with st.expander("Show prompt (debug)"):
-                    st.code(result["prompt"], language="text")
-
-        except FileNotFoundError as e:
-            st.error(str(e))
-            st.info("Use the sidebar to build the vector store first.")
-
-
-with col2:
-    st.markdown("### Retrieved Chunks")
+if submitted and query.strip():
     try:
         rag = RAGPipeline(VECTORSTORE_DIR)
         rag.ensure_loaded()
-        ctxs = rag.retrieve(query if query.strip() else "introductions", TOP_K)
+
+        # Retrieve and apply threshold filter
+        raw_ctxs = rag.retrieve(query.strip(), TOP_K)
+        ctxs = [c for c in raw_ctxs if c["score"] >= threshold]
+
+        if not ctxs:
+            fixed_answer = "I could not find this in the documents."
+            result = {"prompt": f"No contexts >= {threshold}"}
+        else:
+            result = rag.answer(query.strip(), ctxs)
+            fixed_answer = result["answer"]
+
+        st.markdown("### Answer")
+        st.write(fixed_answer)
+
+        # Save transcript
+        st.session_state["transcript"].append({
+            "question": query.strip(),
+            "answer": fixed_answer,
+            "contexts": ctxs
+        })
+
+        if ctxs:
+            with st.expander("Show prompt (debug)"):
+                st.code(result["prompt"], language="text")
+
+    except FileNotFoundError as e:
+        st.error(str(e))
+        st.info("Use the sidebar to build the vector store first.")
+
+# -------------------- Retrieved Chunks --------------------
+st.subheader("Retrieved Chunks")
+if query.strip():
+    try:
+        rag = RAGPipeline(VECTORSTORE_DIR)
+        rag.ensure_loaded()
+        ctxs = rag.retrieve(query.strip(), TOP_K)
         for i, c in enumerate(ctxs, 1):
-            with st.expander(f"🔎 Chunk {i} — {c['meta']['source']} (score={c['score']:.3f})", expanded=False):
-                # Split line into parts if it's "English | Feefee | French"
-                parts = [p.strip() for p in c["text"].split("|")]
-                if len(parts) == 3:
-                    st.markdown(f"**English:** {parts[0]}")
-                    st.markdown(f"**Fè’éfě’è:** {parts[1]}")
-                    st.markdown(f"**French:** {parts[2]}")
-                else:
-                    st.text(c["text"])
-    except Exception as e:
+            if c["score"] >= threshold:  # ✅ respect threshold
+                with st.expander(f"🔎 Chunk {i} — {c['meta']['source']} (score={c['score']:.3f})", expanded=False):
+                    parts = [p.strip() for p in c["text"].split("|")]
+                    if len(parts) == 3:
+                        st.markdown(f"**English:** {parts[0]}")
+                        st.markdown(f"**Fè’éfě’è:** {parts[1]}")
+                        st.markdown(f"**French:** {parts[2]}")
+                    else:
+                        st.text(c["text"])
+    except Exception:
         st.caption("⚠️ Build the index to preview retrieved chunks.")
 
-# Transcript download
-if st.session_state["transcript"]:
+# -------------------- Transcript Download --------------------
+if st.session_state.get("transcript"):
     st.subheader("Download Q&A Transcript")
-    df = pd.DataFrame(st.session_state["transcript"])
-    csv = df.to_csv(index=False).encode("utf-8")
+
+    rows = []
+    for i, item in enumerate(st.session_state["transcript"], 1):
+        q = item.get("question", "")
+        a = item.get("answer", "")
+        ctxs = item.get("contexts", [])
+
+        if ctxs:
+            for ctx in ctxs:
+                rows.append({
+                    "Q#": i,
+                    "Question": q,
+                    "Answer": a,
+                    "Source": ctx.get("source", "N/A"),
+                    "Chunk Text": ctx.get("text", "N/A"),
+                    "Score": ctx.get("score", None)
+                })
+        else:
+            rows.append({
+                "Q#": i,
+                "Question": q,
+                "Answer": a,
+                "Source": "N/A",
+                "Chunk Text": "N/A",
+                "Score": None
+            })
+
+    df = pd.DataFrame(rows)
+    csv = df.to_csv(index=False, encoding="utf-8-sig")
+
     st.download_button(
         "📥 Download Transcript (CSV)",
         csv,
-        "transcript.csv",
+        "qa_transcript.csv",
         "text/csv",
         key="download-csv"
     )

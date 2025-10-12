@@ -202,6 +202,76 @@ Answer (with citations like [1], [2]):"""
 
 # ----------------- RAG Pipeline -----------------
 
+# class RAGPipeline:
+#     def __init__(self, vs_dir: Path = VECTORSTORE_DIR):
+#         self.vs_dir = vs_dir
+#         self.index = VectorIndex()
+#         self.generator = Generator()
+
+#     def ensure_loaded(self):
+#         if not (self.vs_dir / "faiss.index").exists():
+#             raise FileNotFoundError("Vector store not found. Run ingest.py first.")
+#         self.index.load(self.vs_dir)
+
+#     def retrieve(self, query: str, k: int = TOP_K) -> List[Dict[str, Any]]:
+#         results = self.index.search(query, k)
+#         # Apply similarity filter
+#         filtered = []
+#         for i, s in results:
+#             if s >= SIM_THRESHOLD:
+#                 filtered.append(self.index.docs[i] | {"score": s})
+#         return filtered
+
+#     def answer(self, query: str, contexts: List[Dict[str, Any]]) -> Dict[str, Any]:
+#         if not contexts:
+#             return {
+#                 "answer": "I could not find this in the documents.",
+#                 "contexts": [],
+#                 "prompt": f"Question: {query}\n\nNo strong matches found."
+#             }
+
+#         # ✅ Case 1: FAQ-style Q&A
+#         for i, c in enumerate(contexts):
+#             text = c["text"]
+#             if text.strip().startswith("Q:") and "A:" in text:
+#                 qna_parts = text.split("A:", 1)
+#                 if len(qna_parts) == 2:
+#                     ans = qna_parts[1].strip()
+#                     return {
+#                         "answer": f"{ans} [{i+1}]",
+#                         "contexts": contexts,
+#                         "prompt": f"Direct FAQ match.\n\nQuestion: {query}"
+#                     }
+
+#         # ✅ Case 2: Phrasebook style (multi-language → extract only Fe'efe'e)
+#         for i, c in enumerate(contexts):
+#             text = c["text"]
+#             if "Fe'efe'e:" in text:
+#                 feefee = text.split("Fe'efe'e:")[1]
+#                 if "French:" in feefee:
+#                     feefee = feefee.split("French:")[0]
+#                 answer = feefee.strip()
+#                 return {
+#                     "answer": f"{answer} [{i+1}]",
+#                     "contexts": contexts,
+#                     "prompt": f"Direct phrasebook match.\n\nQuestion: {query}"
+#                 }
+
+#         # ✅ Case 3: Fallback → use generator
+#         prompt = format_prompt(query, contexts)
+#         completion = self.generator.generate(prompt)
+
+#         if not completion.strip() or "I could not find" in completion:
+#             completion = "I could not find this in the documents."
+
+#         return {
+#             "answer": completion,
+#             "contexts": contexts,
+#             "prompt": prompt
+#         }
+
+import re
+
 class RAGPipeline:
     def __init__(self, vs_dir: Path = VECTORSTORE_DIR):
         self.vs_dir = vs_dir
@@ -215,7 +285,6 @@ class RAGPipeline:
 
     def retrieve(self, query: str, k: int = TOP_K) -> List[Dict[str, Any]]:
         results = self.index.search(query, k)
-        # Apply similarity filter
         filtered = []
         for i, s in results:
             if s >= SIM_THRESHOLD:
@@ -243,21 +312,38 @@ class RAGPipeline:
                         "prompt": f"Direct FAQ match.\n\nQuestion: {query}"
                     }
 
-        # ✅ Case 2: Phrasebook style (multi-language → extract only Fe'efe'e)
-        for i, c in enumerate(contexts):
-            text = c["text"]
-            if "Fe'efe'e:" in text:
-                feefee = text.split("Fe'efe'e:")[1]
-                if "French:" in feefee:
-                    feefee = feefee.split("French:")[0]
-                answer = feefee.strip()
-                return {
-                    "answer": f"{answer} [{i+1}]",
-                    "contexts": contexts,
-                    "prompt": f"Direct phrasebook match.\n\nQuestion: {query}"
-                }
+        # ✅ Case 2: Phrasebook style (translation → extract only Fe’efe’e)
+        if ("how do you say" in query.lower() 
+            or "translate" in query.lower() 
+            or re.search(r"[éèêàùç]", query)):  # detect French input
+            for i, c in enumerate(contexts):
+                text = c["text"]
+                if "Fe'efe'e:" in text:
+                    feefee = text.split("Fe'efe'e:")[1]
+                    if "French:" in feefee:
+                        feefee = feefee.split("French:")[0]
+                    return {
+                        "answer": f"{feefee.strip()} [{i+1}]",
+                        "contexts": contexts,
+                        "prompt": f"Direct phrasebook match.\n\nQuestion: {query}"
+                    }
 
-        # ✅ Case 3: Fallback → use generator
+        # ✅ Case 3: Keyword fallback for French queries
+        for i, c in enumerate(contexts):
+            if "French:" in c["text"]:
+                french_text = c["text"].split("French:")[1].lower()
+                if any(word in french_text for word in query.lower().split()):
+                    if "Fe'efe'e:" in c["text"]:
+                        feefee = c["text"].split("Fe'efe'e:")[1]
+                        if "French:" in feefee:
+                            feefee = feefee.split("French:")[0]
+                        return {
+                            "answer": f"{feefee.strip()} [{i+1}]",
+                            "contexts": contexts,
+                            "prompt": f"Keyword fallback match.\n\nQuestion: {query}"
+                        }
+
+        # ✅ Case 4: Generator fallback
         prompt = format_prompt(query, contexts)
         completion = self.generator.generate(prompt)
 
