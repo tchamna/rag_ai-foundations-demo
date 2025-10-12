@@ -12,6 +12,7 @@ Why this project is portfolio-worthy
 
 Live demo (local or cloud)
 - Run locally with CPU-only models or deploy to Streamlit Cloud for quick sharing with anyone, as a prototype.
+- Hosted demo (Streamlit Cloud): https://tchamna-rag-ai-foundation-model.streamlit.app/
 
 Key features
 - Ingest text/csv/xlsx and automatically chunk documents for retrieval.

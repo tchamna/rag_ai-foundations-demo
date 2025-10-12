@@ -240,11 +240,34 @@ class VectorIndex:
 
 class ReRanker:
     def __init__(self, model_name="cross-encoder/ms-marco-MiniLM-L-6-v2"):
-        self.model = CrossEncoder(model_name)
+        # Pick a safe device for the CrossEncoder. Prefer CUDA/MPS when available,
+        # otherwise fall back to CPU. If loading the model fails for any reason
+        # (in constrained cloud runtimes), keep model=None so callers can skip
+        # reranking instead of crashing the app.
+        device = "cpu"
+        try:
+            import torch
+            if torch.cuda.is_available():
+                device = "cuda"
+            elif getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+                device = "mps"
+        except Exception:
+            device = "cpu"
+
+        try:
+            self.model = CrossEncoder(model_name, device=device)
+        except Exception as e:
+            # Avoid crashing the whole app if the reranker can't be loaded in this environment.
+            print(f"Warning: failed to load CrossEncoder reranker on device={device}: {e}")
+            self.model = None
 
     def rerank(self, query: str, contexts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         if not contexts:
             return []
+        if not self.model:
+            # Reranker not available in this environment; return contexts unchanged.
+            return contexts
+
         pairs = [(query, c["text"]) for c in contexts]
         scores = self.model.predict(pairs)
 
