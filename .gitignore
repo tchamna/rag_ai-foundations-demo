@@ -13,6 +13,9 @@ venv/
 data/*.zip
 *.log
 
+# Ignore pitch document (local pitch/demo notes)
+assets/pitch.rtf
+
 # Jupyter
 .ipynb_checkpoints/
 

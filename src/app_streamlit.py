@@ -2,6 +2,21 @@ import streamlit as st
 from pathlib import Path
 import pandas as pd
 import pickle
+import io
+import unicodedata
+import re
+
+
+def _clean_phrase(s: str) -> str:
+    if not s:
+        return s
+    out = s.strip()
+    # remove leading numeric markers like '520)' or '520) '
+    out = re.sub(r"^\s*\d+\)\s*", "", out)
+    out = re.sub(r"^\s*\d+[:\-]\s*", "", out)
+    # remove leading label like 'English:' if present
+    out = re.sub(r"^English:\s*", "", out, flags=re.I)
+    return out.strip()
 
 from rag_pipeline import RAGPipeline, load_corpus, build_documents, VectorIndex
 from config import DATA_DIR, VECTORSTORE_DIR, TOP_K, SIM_THRESHOLD
@@ -187,12 +202,46 @@ with col1:
 
             if ctxs:
                 for ctx in ctxs:
+                    raw = ctx.get("text", "N/A")
+                    # try to parse phrasebook style: English / Fe'efe'e / French
+                    eng = None
+                    feefee = None
+                    fr = None
+                    # first try the pipe-delimited style
+                    if "|" in raw:
+                        parts = [p.strip() for p in raw.split("|")]
+                        if len(parts) == 3:
+                            eng, feefee, fr = parts
+                            eng = _clean_phrase(eng)
+                            feefee = _clean_phrase(feefee)
+                            fr = _clean_phrase(fr)
+                    # fallback to labeled format
+                    if (not eng) and "Fe'efe'e:" in raw:
+                        try:
+                            if "English:" in raw:
+                                eng = raw.split("English:", 1)[1].split("Fe'efe'e:", 1)[0].strip()
+                                eng = _clean_phrase(eng)
+                            if "Fe'efe'e:" in raw:
+                                feefee = raw.split("Fe'efe'e:", 1)[1]
+                                if "French:" in feefee:
+                                    feefee, fr_part = feefee.split("French:", 1)
+                                    fr = _clean_phrase(fr_part)
+                                feefee = _clean_phrase(feefee)
+                        except Exception:
+                            pass
+
+                    # final cleaned chunk text (prefer feefee then english then raw)
+                    cleaned_chunk = feefee or eng or raw
+
                     rows.append({
                         "Q#": i,
                         "Question": q,
                         "Answer": a,
                         "Source": ctx.get("source", "N/A"),
-                        "Chunk Text": ctx.get("text", "N/A"),
+                        "Chunk Text": cleaned_chunk,
+                        "English": eng,
+                        "Fe'efe'e": feefee,
+                        "French": fr,
                         "Score": ctx.get("score", None)
                     })
             else:
@@ -202,18 +251,50 @@ with col1:
                     "Answer": a,
                     "Source": "N/A",
                     "Chunk Text": "N/A",
+                    "English": None,
+                    "Fe'efe'e": None,
+                    "French": None,
                     "Score": None
                 })
 
-        df = pd.DataFrame(rows)
-        csv = df.to_csv(index=False, encoding="utf-8-sig")
+        # Normalize unicode to NFC so characters render correctly in Excel/
+        # other viewers. Convert the CSV to UTF-8 with BOM bytes for
+        # best compatibility with Microsoft Excel on Windows.
+        def _nfc(v):
+            if v is None:
+                return ""
+            return unicodedata.normalize("NFC", str(v))
 
+        # Apply normalization
+        for r in rows:
+            for k in ("Question", "Answer", "Source", "Chunk Text"):
+                r[k] = _nfc(r.get(k, ""))
+
+        df = pd.DataFrame(rows)
+        csv_text = df.to_csv(index=False)
+        csv_bytes = csv_text.encode("utf-8-sig")  # BOM + UTF-8 bytes
+
+        # CSV download (UTF-8 BOM encoded)
         st.download_button(
             "📥 Download Transcript (CSV)",
-            csv,
-            "qa_transcript.csv",
-            "text/csv",
-            key="download-csv"
+            data=csv_bytes,
+            file_name="qa_transcript.csv",
+            mime="text/csv",
+            key="download-csv",
+        )
+
+        # Also provide an XLSX download which usually avoids encoding issues
+        with io.BytesIO() as output:
+            with pd.ExcelWriter(output, engine="openpyxl") as writer:
+                df.to_excel(writer, index=False, sheet_name="transcript")
+            xlsx_data = output.getvalue()
+
+        st.download_button(
+            "📥 Download Transcript (XLSX)",
+            data=xlsx_data,
+            file_name="qa_transcript.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="download-xlsx",
         )
 
 with col2:
