@@ -19,7 +19,7 @@ def _clean_phrase(s: str) -> str:
     return out.strip()
 
 from rag_pipeline import RAGPipeline, load_corpus, build_documents, VectorIndex
-from config import DATA_DIR, VECTORSTORE_DIR, TOP_K, SIM_THRESHOLD
+from config import DATA_DIR, VECTORSTORE_DIR, TOP_K, SIM_THRESHOLD, USE_RERANKER
 
 # -------------------------
 # Page Setup
@@ -111,12 +111,11 @@ with col1:
         try:
             # rag = RAGPipeline(VECTORSTORE_DIR, use_chatgpt=use_chatgpt)
             rag = RAGPipeline(
-            VECTORSTORE_DIR,
-            use_chatgpt=use_chatgpt,
-            use_reranker=True,               # keep reranker enabled
-            refine_phrasebook_with_gpt=False # disable GPT polishing of phrasebook hits
-            # refine_phrasebook_with_gpt=True # disable GPT polishing of phrasebook hits
-                )
+                VECTORSTORE_DIR,
+                use_chatgpt=use_chatgpt,
+                use_reranker=USE_RERANKER,               # controlled by config
+                refine_phrasebook_with_gpt=False # disable GPT polishing of phrasebook hits
+            )
 
             rag.ensure_loaded()
 

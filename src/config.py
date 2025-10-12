@@ -16,3 +16,8 @@ CHUNK_OVERLAP = 50
 # Retrieval
 TOP_K = 3
 SIM_THRESHOLD = 0.25  # filter out weak matches
+
+# Toggle whether to load/use the cross-encoder reranker. Set to False for
+# low-memory or Cloud environments that may fail when loading the reranker.
+USE_RERANKER = False
+# USE_RERANKER = True
