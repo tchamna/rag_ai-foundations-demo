@@ -1,0 +1,7 @@
+gradio>=3.50.0
+sentence-transformers>=2.2.2
+faiss-cpu>=1.7.4
+transformers>=4.30.0
+numpy
+pandas
+torch
