@@ -301,11 +301,11 @@ with col2:
     try:
         # rag = RAGPipeline(VECTORSTORE_DIR, use_chatgpt=use_chatgpt)
         rag = RAGPipeline(
-        VECTORSTORE_DIR,
-        use_chatgpt=use_chatgpt,
-        use_reranker=True,               # keep reranker enabled
-        refine_phrasebook_with_gpt=False # disable GPT polishing of phrasebook hits
-            )
+            VECTORSTORE_DIR,
+            use_chatgpt=use_chatgpt,
+            use_reranker=USE_RERANKER,
+            refine_phrasebook_with_gpt=False, # disable GPT polishing of phrasebook hits
+        )
 
         rag.ensure_loaded()
         ctxs = rag.retrieve(query if query.strip() else "introductions", TOP_K)

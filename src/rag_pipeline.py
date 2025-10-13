@@ -5,21 +5,20 @@ from typing import List, Dict, Any, Tuple
 import pickle
 
 import numpy as np
-import pandas as pd
+import pandas as pd 
+
 import unicodedata
 
+from sentence_transformers import SentenceTransformer, CrossEncoder
 import faiss
+
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+from openai import OpenAI
+
 
 from config import (
-    DATA_DIR,
-    VECTORSTORE_DIR,
-    EMBEDDING_MODEL,
-    GENERATION_MODEL,
-    CHUNK_SIZE,
-    CHUNK_OVERLAP,
-    TOP_K,
-    SIM_THRESHOLD,
+    DATA_DIR, VECTORSTORE_DIR, EMBEDDING_MODEL, GENERATION_MODEL,
+    CHUNK_SIZE, CHUNK_OVERLAP, TOP_K, SIM_THRESHOLD
 )
 
 
@@ -53,33 +52,44 @@ def _clean_phrase(s: str) -> str:
     if not s:
         return s
     out = s.strip()
+    # remove leading numeric markers like '520)' or '520) '
     out = re.sub(r"^\s*\d+\)\s*", "", out)
     out = re.sub(r"^\s*\d+[:\-]\s*", "", out)
+    # remove stray leading labels if present (e.g., 'English:')
     out = re.sub(r"^English:\s*", "", out, flags=re.I)
-    return out.strip()
+    out = out.strip()
+    return out
 
 def _is_translation_query(q: str) -> bool:
     ql = q.lower()
     triggers = (
         "translate ", "how do you say", "how to say",
-        "say '", "say “", "say \"", "in fe'efe'e", "in feefe'e",
+        "say '", "say “", "say \"", "in fe'efe'e", "in feefe'e"
     )
     return any(t in ql for t in triggers)
 
 def _english_target_from_query(q: str) -> str:
+    # Extract the English phrase from queries like:
+    # "translate where are you", "how do you say 'where are you' in fe'efe'e?"
     t = re.sub(r"(?i)translate\s+", "", q)
     t = re.sub(r"(?i)how\s+do\s+you\s+say\s+", "", t)
     t = re.sub(r"(?i)how\s+to\s+say\s+", "", t)
     t = re.sub(r"(?i)\s+in\s+fe[’'´`]?efe[’'´`]?e\??", "", t)
-    return t.strip(" ?\"'“”‘’")
+    t = t.strip(" ?\"'“”‘’")
+    return t
 
 def _lexical_search_docs(docs, term: str, limit: int = 50):
+    """
+    Substring search that mirrors your Vector DB browser behavior,
+    but accent/case insensitive. Keeps original corpus order.
+    """
     if not term:
         return []
     norm_term = _normalize_text(term)
     out_idxs = []
     for i, d in enumerate(docs):
-        if norm_term in _normalize_text(d["text"]):
+        norm_txt = _normalize_text(d["text"])
+        if norm_term in norm_txt:
             out_idxs.append(i)
             if len(out_idxs) >= limit:
                 break
@@ -120,7 +130,7 @@ def load_corpus(data_dir: Path) -> List[Dict[str, Any]]:
             for i, line in enumerate(lines):
                 if not line.strip():
                     continue
-                if "|" in line:
+                if "|" in line:  # phrasebook style
                     parts = [seg.strip() for seg in line.split("|")]
                     if len(parts) == 3:
                         text = f"English: {parts[0]}\nFe'efe'e: {parts[1]}\nFrench: {parts[2]}"
@@ -131,7 +141,7 @@ def load_corpus(data_dir: Path) -> List[Dict[str, Any]]:
                 corpus.append({
                     "id": f"{p}#{i}",
                     "text": text,
-                    "meta": {"source": f"{p.name} (line {i+1})"},
+                    "meta": {"source": f"{p.name} (line {i+1})"}
                 })
 
         elif p.suffix.lower() == ".csv" and "faq" in p.name.lower():
@@ -144,7 +154,7 @@ def load_corpus(data_dir: Path) -> List[Dict[str, Any]]:
                     corpus.append({
                         "id": f"{p}#{idx}",
                         "text": text,
-                        "meta": {"source": f"{p.name} (row {idx})"},
+                        "meta": {"source": f"{p.name} (row {idx})"}
                     })
 
         elif p.suffix.lower() == ".xlsx":
@@ -157,7 +167,7 @@ def load_corpus(data_dir: Path) -> List[Dict[str, Any]]:
                     corpus.append({
                         "id": f"{p}#{idx}",
                         "text": text,
-                        "meta": {"source": f"{p.name} (row {idx})"},
+                        "meta": {"source": f"{p.name} (row {idx})"}
                     })
 
     return corpus
@@ -169,7 +179,7 @@ def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVE
     chunks = []
     i = 0
     while i < len(tokens):
-        chunk = tokens[i : i + chunk_size]
+        chunk = tokens[i:i+chunk_size]
         chunks.append(" ".join(chunk))
         i += chunk_size - overlap
         if i <= 0:
@@ -181,25 +191,34 @@ def build_documents(corpus: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     for item in corpus:
         chunks = chunk_text(item["text"])
         for idx, ch in enumerate(chunks):
-            docs.append({"id": f"{item['id']}::chunk{idx}", "text": ch, "meta": item["meta"]})
+            docs.append({
+                "id": f"{item['id']}::chunk{idx}",
+                "text": ch,
+                "meta": item["meta"]
+            })
     return docs
 
 # ----------------- Vector Index -----------------
 
 class VectorIndex:
     def __init__(self, embedding_model: str = EMBEDDING_MODEL):
+        # Delay heavy model initialization until actually needed. Some
+        # deployment environments (Streamlit Cloud) provide torch in a
+        # configuration that causes module.to(device) to raise
+        # NotImplementedError during construction. To avoid crashing the
+        # app at import/startup, keep embedder None and initialize lazily
+        # inside _embed() with a safe device fallback.
         self.embedding_model = embedding_model
         self.embedder = None
         self.index = None
         self.docs: List[Dict[str, Any]] = []
 
     def _embed(self, texts: List[str]) -> np.ndarray:
-        # Lazy-load SentenceTransformer to avoid import-time device moves
+        # Lazy-load the SentenceTransformer only when embeddings are needed.
         if self.embedder is None:
             device = "cpu"
             try:
                 import torch
-
                 if getattr(torch, "cuda", None) and torch.cuda.is_available():
                     device = "cuda"
                 elif getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
@@ -208,15 +227,16 @@ class VectorIndex:
                 device = "cpu"
 
             try:
-                from sentence_transformers import SentenceTransformer
-
+                # Pass device explicitly; if this fails, try a CPU-only load.
                 self.embedder = SentenceTransformer(self.embedding_model, device=device)
             except Exception as e:
-                # Fallback to CPU attempt
+                print(f"Warning: failed to load SentenceTransformer on device={device}: {e}. Falling back to CPU.")
                 try:
                     self.embedder = SentenceTransformer(self.embedding_model, device="cpu")
                 except Exception as e2:
-                    raise RuntimeError(f"Failed to load embedding model: {e2}") from e2
+                    # If even CPU load fails, raise a clear error so caller can
+                    # handle it (the app can catch this and present a message).
+                    raise RuntimeError(f"Could not load embedding model '{self.embedding_model}': {e2}") from e2
 
         return self.embedder.encode(texts, show_progress_bar=False, normalize_embeddings=True)
 
@@ -251,35 +271,42 @@ class VectorIndex:
 # ----------------- Re-Ranker -----------------
 
 class ReRanker:
-    def __init__(self, model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"):
-        self.model = None
+    def __init__(self, model_name="cross-encoder/ms-marco-MiniLM-L-6-v2"):
+        # Pick a safe device for the CrossEncoder. Prefer CUDA/MPS when available,
+        # otherwise fall back to CPU. If loading the model fails for any reason
+        # (in constrained cloud runtimes), keep model=None so callers can skip
+        # reranking instead of crashing the app.
+        device = "cpu"
         try:
-            from sentence_transformers import CrossEncoder
-
+            import torch
+            if torch.cuda.is_available():
+                device = "cuda"
+            elif getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+                device = "mps"
+        except Exception:
             device = "cpu"
-            try:
-                import torch
 
-                if getattr(torch, "cuda", None) and torch.cuda.is_available():
-                    device = "cuda"
-                elif getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
-                    device = "mps"
-            except Exception:
-                device = "cpu"
-
+        try:
             self.model = CrossEncoder(model_name, device=device)
         except Exception as e:
-            # Keep model=None so callers can continue without reranking
-            print(f"Warning: CrossEncoder unavailable: {e}")
+            # Avoid crashing the whole app if the reranker can't be loaded in this environment.
+            print(f"Warning: failed to load CrossEncoder reranker on device={device}: {e}")
+            self.model = None
 
     def rerank(self, query: str, contexts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        if not contexts or not self.model:
+        if not contexts:
+            return []
+        if not self.model:
+            # Reranker not available in this environment; return contexts unchanged.
             return contexts
+
         pairs = [(query, c["text"]) for c in contexts]
         scores = self.model.predict(pairs)
+
         for c, s in zip(contexts, scores):
             c["rerank_score"] = float(s)
-        return sorted(contexts, key=lambda x: x.get("rerank_score", 0.0), reverse=True)
+
+        return sorted(contexts, key=lambda x: x["rerank_score"], reverse=True)
 
 # ----------------- Generator -----------------
 
@@ -287,13 +314,8 @@ class Generator:
     def __init__(self, model_name: str = GENERATION_MODEL, use_chatgpt: bool = False):
         self.use_chatgpt = use_chatgpt
         if use_chatgpt:
-            try:
-                from openai import OpenAI
-
-                self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-                self.model = "gpt-4o-mini"
-            except Exception:
-                raise RuntimeError("OpenAI client unavailable or OPENAI_API_KEY not set")
+            self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+            self.model = "gpt-4o-mini"
         else:
             self.tokenizer = AutoTokenizer.from_pretrained(model_name)
             self.model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
@@ -301,7 +323,8 @@ class Generator:
     def generate(self, prompt: str, max_new_tokens: int = 256) -> str:
         if self.use_chatgpt:
             resp = self.client.chat.completions.create(
-                model=self.model, messages=[{"role": "user", "content": prompt}]
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}]
             )
             return resp.choices[0].message.content.strip()
         else:
@@ -314,28 +337,25 @@ class Generator:
 def format_prompt(query: str, contexts: List[Dict[str, Any]]) -> str:
     if not contexts:
         return f"""You are a Fe'efe'e language tutor.
-Question: {query}
+                    Question: {query}
 
-No sources were found. Answer: I could not find this in the documents."""
+                    No sources were found. Answer: I could not find this in the documents."""
 
-    cited = "\n\n".join([f"[{i+1}] Source: {c['meta']['source']}\n{c['text']}" for i, c in enumerate(contexts)])
-    return (
-        f"""You are a Fe'efe'e language assistant. 
-Always prioritize answers in Fe'efe'e. If relevant, add the French translation after.
-Do not invent information not in the sources.
+        cited = "\n\n".join(
+            [f"[{i+1}] Source: {c['meta']['source']}\n{c['text']}" for i, c in enumerate(contexts)]
+        )
+        return f"""You are a Fe'efe'e language assistant. 
+                    Always prioritize answers in Fe'efe'e. If relevant, add the French translation after.
+                    Do not invent information not in the sources.
 
-Question: {query}
+                    Question: {query}
 
-Sources:
-{cited}
+                    Sources:
+                    {cited}
 
-Answer (Fe'efe'e first, optional French, with citations like [1], [2]):"""
-    )
+                    Answer (Fe'efe'e first, optional French, with citations like [1], [2]):"""
 
 # ----------------- RAG Pipeline -----------------
-from sentence_transformers import CrossEncoder
-from openai import OpenAI
-import os
 
 def normalize_query(query: str) -> str:
     """
@@ -349,12 +369,13 @@ def normalize_query(query: str) -> str:
     return query
 
 class RAGPipeline:
+    
     def __init__(
         self,
         vs_dir: Path = VECTORSTORE_DIR,
         use_chatgpt: bool = False,
         use_reranker: bool = True,
-        refine_phrasebook_with_gpt: bool = False,
+        refine_phrasebook_with_gpt: bool = False, 
     ):
         self.vs_dir = vs_dir
         self.index = VectorIndex()
@@ -363,42 +384,82 @@ class RAGPipeline:
         self.generator = Generator(model_name=GENERATION_MODEL, use_chatgpt=use_chatgpt)
 
         self.use_reranker = use_reranker
-        self.reranker = ReRanker() if use_reranker else None
+        if use_reranker:
+            self.reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+
 
     def ensure_loaded(self):
         if not (self.vs_dir / "faiss.index").exists():
             raise FileNotFoundError("Vector store not found. Run ingest.py first.")
         self.index.load(self.vs_dir)
 
+    
+
     def retrieve(self, query: str, k: int = TOP_K) -> List[Dict[str, Any]]:
-        query = normalize_months(query)
+        """
+        Hybrid retrieval: combines FAISS semantic search with lexical matching.
+        Ensures numeric/date queries (like '06', '07/05', 'June') return exact matches.
+        """
         docs = self.index.docs
+        ctxs = []
 
-        # Lexical exact matches (accent/case-insensitive)
-        lexical_idxs = _lexical_search_docs(docs, query, limit=50)
+        # --------- Detect if query looks like a number/date ----------
+        def is_date_or_number(q: str) -> bool:
+            return bool(re.search(r"\b\d{1,2}(/|-)\d{1,2}\b", q)) or \
+                bool(re.search(r"\b\d{2,4}\b", q)) or \
+                any(m in q.lower() for m in ["january","february","march","april","may","june",
+                                                "july","august","september","october","november","december"])
 
-        # Semantic search (FAISS)
+        def normalize(s: str) -> str:
+            return "".join(c for c in unicodedata.normalize("NFKD", s.lower()) if not unicodedata.combining(c))
+
+        lexical_idxs = []
+        if is_date_or_number(query):
+            norm_term = normalize(query)
+            for i, d in enumerate(docs):
+                if norm_term in normalize(d["text"]):
+                    lexical_idxs.append(i)
+
+        # --------- Semantic FAISS search ----------
         faiss_results = self.index.search(query, top_k=50)
         semantic_idxs = [i for i, _ in faiss_results]
 
-        merged = list(dict.fromkeys(lexical_idxs + semantic_idxs))
-        faiss_score_map = {i: float(s) for i, s in faiss_results}
+        # --------- Merge ----------
+        merged = list(dict.fromkeys(lexical_idxs + semantic_idxs))  # keep order
 
-        ctxs: List[Dict[str, Any]] = []
+        # Build a map of semantic scores from faiss_results (if any). faiss_results
+        # is a list of (idx, score) tuples; higher is better. Use that score for
+        # semantic entries, and give lexical exact matches a boost on top.
+        faiss_score_map: Dict[int, float] = {i: float(s) for i, s in faiss_results}
+
+        ctxs = []
         for i in merged:
-            base = faiss_score_map.get(i, 0.0)
+            # Base score: prefer FAISS-provided score when available, otherwise 0.0
+            base_sem_score = faiss_score_map.get(i, 0.0)
+
+            # If this doc was found by lexical matching, give it a fixed boost
+            # so exact/lexical matches rank higher than similar semantic hits.
             if i in lexical_idxs:
-                score = 1.0 + base
+                score = 1.0 + base_sem_score  # lexical + any semantic relevance
             else:
-                raw = float(base)
-                scaled = 0.5 + 0.5 * raw
-                score = max(0.0, min(1.0, scaled))
+                    # For semantic-only hits, scale FAISS cosine/dot scores into [0,1].
+                    # When embeddings are normalized, FAISS returns cosine (in [-1,1]).
+                    # Map that to [0,1] with a linear transform so UI thresholds work
+                    # sensibly: score = 0.5 + 0.5 * base_sem_score.
+                    raw = float(base_sem_score)
+                    scaled = 0.5 + 0.5 * raw
+                    # clamp to [0,1]
+                    score = max(0.0, min(1.0, scaled))
 
-            ctxs.append({**docs[i], "score": float(score)})
+            ctxs.append(docs[i] | {"score": score})
 
-        # Optional rerank
-        if self.reranker and ctxs:
-            ctxs = self.reranker.rerank(query, ctxs)
+        # --------- Rerank (if enabled) ----------
+        if getattr(self, "use_reranker", False) and ctxs:
+            pairs = [(query, c["text"]) for c in ctxs]
+            scores = self.reranker.predict(pairs)
+            for j, s in enumerate(scores):
+                ctxs[j]["rerank_score"] = float(s)
+            ctxs.sort(key=lambda x: x.get("rerank_score", 0.0), reverse=True)
 
         return ctxs[:k]
 
@@ -411,92 +472,13 @@ class RAGPipeline:
                 "mode": "no_context",
             }
 
+        # Limit to top contexts (to reduce noise)
         top_contexts = contexts[:3]
-
-        # FAQ shortcut
-        for i, c in enumerate(top_contexts):
-            text = c["text"]
-            if text.strip().startswith("Q:") and "A:" in text:
-                ans = text.split("A:", 1)[1].strip()
-                prompt = f"[FAQ Direct Match]\nQuestion: {query}\nMatched: {c['meta']['source']}\nContext: {text}\nExtracted Answer: {ans}"
-                return {"answer": f"{ans} [{i+1}]", "contexts": top_contexts, "prompt": prompt, "mode": "faq"}
-
-        # Phrasebook shortcut
-        for i, c in enumerate(top_contexts):
-            text = c["text"]
-            if "Fe'efe'e:" in text:
-                eng = feefee = fr = None
-                if "English:" in text:
-                    eng = text.split("English:", 1)[1].split("Fe'efe'e:", 1)[0].strip()
-                if "Fe'efe'e:" in text:
-                    feefee = text.split("Fe'efe'e:", 1)[1]
-                    if "French:" in feefee:
-                        feefee, fr_part = feefee.split("French:", 1)
-                        fr = fr_part.strip()
-                    feefee = feefee.strip()
-
-                feefee_clean = _clean_phrase(feefee) if feefee else None
-                eng_clean = _clean_phrase(eng) if eng else None
-                fr_clean = _clean_phrase(fr) if fr else None
-
-                if feefee_clean:
-                    if eng_clean or fr_clean:
-                        tail = " — ".join([p for p in (eng_clean, fr_clean) if p])
-                        answer = f"{feefee_clean} ({tail})"
-                    else:
-                        answer = feefee_clean
-                else:
-                    answer = " — ".join([p for p in (eng_clean, fr_clean) if p])
-
-                prompt = f"[Phrasebook Direct Match]\nQuestion: {query}\nMatched: {c['meta']['source']}\nContext: {text}\nExtracted: {answer}"
-
-                # Optional GPT polish for phrasebook
-                if self.use_chatgpt:
-                    rp = f"Rewrite the following phrasebook entry into a polished sentence. Input: {answer}\nOutput:" 
-                    try:
-                        polished = self.generator.generate(rp, max_new_tokens=120).strip()
-                        if polished:
-                            answer = polished
-                            prompt += "\n[Refined with GPT]"
-                    except Exception:
-                        pass
-
-                return {"answer": f"{answer} [{i+1}]", "contexts": top_contexts, "prompt": prompt, "mode": "phrasebook"}
-
-        # Generator path (ChatGPT or local)
-        cited = "\n\n".join([f"[{i+1}] {c['text']} (Source: {c['meta']['source']})" for i, c in enumerate(top_contexts)])
-        if self.use_chatgpt:
-            prompt = f"You are a helpful assistant. Use ONLY the contexts below. Question: {query}\n\n{cited}\n\nAnswer:" 
-            try:
-                out = self.generator.generate(prompt, max_new_tokens=700).strip()
-                return {"answer": out, "contexts": top_contexts, "prompt": prompt, "mode": "gpt"}
-            except Exception:
-                pass
-
-        # Local FLAN fallback
-        prompt = f"Use the contexts to answer the question. Question: {query}\n\n{cited}\n\nAnswer:"
-        completion = self.generator.generate(prompt).strip()
-        import re as _re
-        if not completion or _re.fullmatch(r"(?:\s*\[\d+\]\s*)+", completion):
-            completion = f"{top_contexts[0]['text']} [1]"
-            mode = "fallback"
-        else:
-            mode = "flan"
-
-        return {"answer": completion, "contexts": top_contexts, "prompt": prompt, "mode": mode}
-
-    
-        if not contexts:
-            return {
-                "answer": "I could not find this in the documents.",
-                "contexts": [],
-                "prompt": f"Question: {query}\n\nNo strong matches found."
-            }
 
         # ------------------------------
         # FAQ-style shortcut
         # ------------------------------
-        for i, c in enumerate(contexts):
+        for i, c in enumerate(top_contexts):
             text = c["text"]
             if text.strip().startswith("Q:") and "A:" in text:
                 qna_parts = text.split("A:", 1)
@@ -510,24 +492,27 @@ class RAGPipeline:
                     Matched Source: {c['meta']['source']}
                     Context: {text}
 
-                    Answer: {ans}
+                    Extracted Answer: {ans}
                     """
                     return {
                         "answer": f"{ans} [{i+1}]",
-                        "contexts": contexts,
-                        "prompt": full_prompt.strip()
+                        "contexts": top_contexts,
+                        "prompt": full_prompt.strip(),
+                        "mode": "faq",
                     }
-
 
         # ------------------------------
         # Phrasebook style (Fe'efe'e first)
         # ------------------------------
-        for i, c in enumerate(contexts):
+        for i, c in enumerate(top_contexts):
             text = c["text"]
             if "Fe'efe'e:" in text:
+                # Try to extract English, Fe'efe'e and French parts where present
                 eng = None
                 feefee = None
                 fr = None
+                # The text format is usually like:
+                # English: ...\nFe'efe'e: ...\nFrench: ...
                 if "English:" in text:
                     eng = text.split("English:", 1)[1].split("Fe'efe'e:", 1)[0].strip()
                 if "Fe'efe'e:" in text:
@@ -536,11 +521,14 @@ class RAGPipeline:
                         feefee, fr_part = feefee.split("French:", 1)
                         fr = fr_part.strip()
                     feefee = feefee.strip()
-
+                # Build answer including available parts
+                # Clean parts and produce a polished sentence
                 feefee_clean = _clean_phrase(feefee) if feefee else None
                 eng_clean = _clean_phrase(eng) if eng else None
                 fr_clean = _clean_phrase(fr) if fr else None
 
+                # Build human-friendly answer: Fe'efe'e sentence followed by
+                # parenthetical English and French if available.
                 if feefee_clean:
                     if eng_clean or fr_clean:
                         tail = " — ".join([p for p in (eng_clean, fr_clean) if p])
@@ -548,6 +536,7 @@ class RAGPipeline:
                     else:
                         answer = feefee_clean
                 else:
+                    # fallback to combining available translations
                     answer = " — ".join([p for p in (eng_clean, fr_clean) if p])
 
                 full_prompt = f"""
@@ -558,33 +547,38 @@ class RAGPipeline:
                 Matched Source: {c['meta']['source']}
                 Context: {text}
 
-                Extracted Answer: {answer}
+                Extracted Fe'efe'e Answer: {answer}
                 """
 
-                # If ChatGPT is enabled here, refine the answer similarly
+                # If ChatGPT is enabled, ask it to rewrite the phrasebook
+                # content into a polished, natural sentence (Fe'efe'e first,
+                # then English and French in parentheses). Keep faithful to
+                # the original content and remove numbering/artifacts.
                 if self.use_chatgpt:
                     rp = f"""
-You are a helpful assistant. Rewrite the following phrasebook entry into a polished, natural-sounding sentence.
-Requirements:
-- Start with the Fe'efe'e sentence (exact or slight normalization).
-- Then include the English and French translations in parentheses, separated by ' — ' if both are present.
-- Remove any numbering or chunk artifacts. Do NOT add or invent content.
+                                You are a helpful assistant. Rewrite the following phrasebook entry into a polished, natural-sounding sentence.
+                                Requirements:
+                                - Start with the Fe'efe'e sentence (exact or slight normalization).
+                                - Then include the English and French translations in parentheses, separated by ' — ' if both are present.
+                                - Remove any numbering or chunk artifacts. Do NOT add or invent content.
 
-Input: {answer}
+                                Input: {answer}
 
-Output:
-"""
+                                Output:
+                                """
                     try:
                         polished = self.generator.generate(rp, max_new_tokens=120).strip()
                         if polished:
                             answer = polished
+                            full_prompt += "\n\n[Refined with GPT]"
                     except Exception:
                         pass
 
                 return {
                     "answer": f"{answer} [{i+1}]",
-                    "contexts": contexts,
-                    "prompt": full_prompt.strip()
+                    "contexts": top_contexts,
+                    "prompt": full_prompt.strip(),
+                    "mode": "phrasebook",
                 }
 
         # ------------------------------
@@ -592,144 +586,71 @@ Output:
         # ------------------------------
         if self.use_chatgpt:
             client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-            context_text = "\n\n".join(
-                [f"{c['text']} (Source: {c['meta']['source']})" for c in contexts]
+            # When using ChatGPT, explicitly ask for an elaborated answer that
+            # re-uses full sentences from the provided contexts. Request clear
+            # citations like [1], [2] and a short summary sentence at the top.
+            cited = "\n\n".join(
+                [f"[{i+1}] {c['text']} (Source: {c['meta']['source']})" for i, c in enumerate(top_contexts)]
             )
 
             prompt = f"""
-You are a precise assistant.
-Use ONLY the context below. Do not invent information.
-Return a clear sentence that answers the question AND include citations like [1], [2].
-If the answer is not explicit, say: "I could not find this in the documents."
+                            You are a helpful, precise assistant. Use ONLY the context below; do NOT invent facts.
 
-Question: {query}
+                            Task:
+                            - Produce a concise answer (1-3 sentences) at the top that directly responds to the question.
+                            - Then, elaborate using full sentences drawn from the contexts. When you reuse text from a context, quote or paraphrase it faithfully and include its citation like [1] after the sentence.
+                            - Keep the tone factual and neutral. If the documents do not contain the answer, say: "I could not find this in the documents." Do not hallucinate.
 
-Context:
-{context_text}
+                            Question: {query}
 
-Answer:
-"""
+                            Contexts:
+                            {cited}
+
+                            Answer:
+                            1) Short direct answer:
+                            2) Elaboration (use full sentences from the sources with citations):
+                            """
 
             resp = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=400
+                max_tokens=700
             )
             return {
                 "answer": resp.choices[0].message.content.strip(),
-                "contexts": contexts,
-                "prompt": prompt
+                "contexts": top_contexts,
+                "prompt": prompt,
+                "mode": "gpt",
             }
 
         # ------------------------------
-        # Default fallback (no GPT)
+        # Fallback: local FLAN-T5
         # ------------------------------
-        top_context = contexts[0]
-        return {
-            "answer": f"{top_context['text']} [1]",
-            "contexts": contexts,
-            "prompt": f"Fallback: returning top chunk.\n\nQuestion: {query}"
-        }
-
-        if not contexts:
-            return {
-                "answer": "I could not find this in the documents.",
-                "contexts": [],
-                "prompt": f"Question: {query}\n\nNo strong matches found.",
-                "mode": "no_context",
-            }
-
-        top_contexts = contexts[:3]
-
-        # 1) FAQ shortcut
-        for i, c in enumerate(top_contexts):
-            txt = c["text"]
-            if "Q:" in txt and "A:" in txt:
-                ans = txt.split("A:", 1)[1].strip()
-                return {
-                    "answer": f"{ans} [{i+1}]",
-                    "contexts": top_contexts,
-                    "prompt": "Direct FAQ match",
-                    "mode": "faq",
-                }
-
-        # 2) Phrasebook shortcut
-        for i, c in enumerate(top_contexts):
-            txt = c["text"]
-            if "Fe'efe'e:" in txt:
-                eng = None
-                feefee = None
-                fr = None
-                if "English:" in txt:
-                    eng = txt.split("English:", 1)[1].split("Fe'efe'e:", 1)[0].strip()
-                if "Fe'efe'e:" in txt:
-                    feefee = txt.split("Fe'efe'e:", 1)[1]
-                    if "French:" in feefee:
-                        feefee, fr_part = feefee.split("French:", 1)
-                        fr = fr_part.strip()
-                    feefee = feefee.strip()
-
-                feefee_clean = _clean_phrase(feefee) if feefee else None
-                eng_clean = _clean_phrase(eng) if eng else None
-                fr_clean = _clean_phrase(fr) if fr else None
-
-                if feefee_clean:
-                    if eng_clean or fr_clean:
-                        tail = " — ".join([p for p in (eng_clean, fr_clean) if p])
-                        answer = f"{feefee_clean} ({tail})"
-                    else:
-                        answer = feefee_clean
-                else:
-                    answer = " — ".join([p for p in (eng_clean, fr_clean) if p])
-
-                mode = "phrasebook"
-                # Optional: let GPT lightly polish (disabled by default)
-                if self.use_chatgpt and self.refine_phrasebook_with_gpt:
-                    rp = f"""You are a strict Fe'efe'e assistant.
-Do NOT translate or invent; keep the same Fe'efe'e content.
-Only normalize spacing/diacritics if needed. Output Fe'efe'e only.
-
-Draft: {answer}
-Final:"""
-                    polished = self.generator.generate(rp).strip()
-                    # keep safe if GPT returns something weird/empty
-                    if polished and len(polished) >= len(answer) - 2:
-                        answer = polished
-                        mode = "phrasebook+gpt"
-
-                return {
-                    "answer": f"{answer} [{i+1}]",
-                    "contexts": top_contexts,
-                    "prompt": "Direct phrasebook match",
-                    "mode": mode,
-                }
-
-        # 3) Generator path (GPT or FLAN)
         cited = "\n\n".join(
             [f"[{i+1}] {c['text']} (Source: {c['meta']['source']})" for i, c in enumerate(top_contexts)]
         )
         prompt = f"""
-You are a precise assistant.
-Use ONLY the context below. Do not invent information.
-Return a clear sentence that answers the question AND include citations like [1], [2].
-If the answer is not explicit, say: "I could not find this in the documents."
+                    You are a precise assistant.
+                    Use ONLY the context below. Do not invent information.
+                    Return a clear sentence that answers the question AND include citations like [1], [2].
+                    If the answer is not explicit, say: "I could not find this in the documents."
 
-Question: {query}
+                    Question: {query}
 
-Context:
-{cited}
+                    Context:
+                    {cited}
 
-Answer:"""
+                    Answer:"""
 
         completion = self.generator.generate(prompt).strip()
 
-        # Guard against citation-only output like "[1] [2]"
+        # Guard against citation-only answers like "[1] [2]"
         import re
         if not completion or re.fullmatch(r"(?:\s*\[\d+\]\s*)+", completion):
             completion = f"{top_contexts[0]['text']} [1]"
             mode = "fallback"
         else:
-            mode = "gpt" if self.use_chatgpt else "flan"
+            mode = "flan"
 
         return {
             "answer": completion,
@@ -737,3 +658,6 @@ Answer:"""
             "prompt": prompt,
             "mode": mode,
         }
+
+    
+       
