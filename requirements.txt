@@ -1,4 +1,5 @@
 streamlit>=1.25.0
+gradio>=4.0.0
 transformers>=4.30.0
 sentence-transformers>=2.2.2
 faiss-cpu>=1.7.4          # CPU-friendly FAISS build
@@ -10,3 +11,6 @@ torch>=2.2.0             # Optional GPU if available on Cloud instance
 
 # Optional: OpenAI for ChatGPT integration (only required if using ChatGPT API)
 openai>=1.0.0
+fastapi>=0.95.0
+uvicorn>=0.22.0
+python-multipart>=0.0.5
