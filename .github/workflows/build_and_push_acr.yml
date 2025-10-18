@@ -1,4 +1,4 @@
-name: Build backend image and deploy to ACR + App Service
+name: Build and Deploy Container to ACR + App Service
 
 on:
   push:
@@ -6,53 +6,67 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-and-push:
+  build-and-deploy:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
       id-token: write
+      contents: read
 
     steps:
-      - name: Checkout
+      # 1. Checkout repo
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Login to Azure (service principal)
-        run: |
-          az login --service-principal -u ${{ secrets.ACR_SP_APPID }} -p '${{ secrets.ACR_SP_PASSWORD }}' --tenant ${{ secrets.AZURE_TENANT_ID }}
+      # 2. Login to Azure with Service Principal
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.ACR_SP_APPID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      # 3. Set variables
       - name: Set variables
         id: vars
         run: |
-          ACR_NAME=${{ secrets.ACR_NAME }}
-          if [ -z "$ACR_NAME" ]; then
-            echo "ACR_NAME is not set. Please add repository secret ACR_NAME with your Azure Container Registry name." >&2
-            exit 1
-          fi
-          LOGIN_SERVER=$(az acr show --name "$ACR_NAME" --query loginServer -o tsv)
-          echo "LOGIN_SERVER=$LOGIN_SERVER" >> $GITHUB_OUTPUT
-          IMAGE_NAME="$LOGIN_SERVER/${{ github.repository }}:latest"
-          echo "IMAGE_NAME=$IMAGE_NAME" >> $GITHUB_OUTPUT
-
-      - name: Set AZURE_RG env
-        run: |
+          echo "ACR_NAME=${{ secrets.ACR_NAME }}" >> $GITHUB_ENV
           echo "AZURE_RG=${{ secrets.AZURE_RG }}" >> $GITHUB_ENV
+          LOGIN_SERVER=$(az acr show --name ${{ secrets.ACR_NAME }} --query loginServer -o tsv)
+          echo "LOGIN_SERVER=$LOGIN_SERVER" >> $GITHUB_ENV
+          IMAGE_NAME=$LOGIN_SERVER/${{ github.repository }}:latest
+          echo "IMAGE_NAME=$IMAGE_NAME" >> $GITHUB_ENV
+          echo "Using image: $IMAGE_NAME"
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install requirements for ACR helper
+      # 4. ACR Docker Login
+      - name: ACR Docker Login
         run: |
-          python -m pip install --upgrade pip
+          az acr login --name $ACR_NAME
 
-      - name: Run push_to_acr script
-        env:
-          ACR_NAME: ${{ secrets.ACR_NAME }}
-          AZURE_RG: ${{ secrets.AZURE_RG }}
-          ACR_SP_APPID: ${{ secrets.ACR_SP_APPID }}
-          ACR_SP_PASSWORD: ${{ secrets.ACR_SP_PASSWORD }}
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      # 5. Build and Push Docker Image
+      - name: Build and Push Image
         run: |
-          python scripts/push_to_acr.py --acr-name "$ACR_NAME" --repo "${{ github.repository }}" --tag latest --dockerfile Dockerfile.backend --context . --configure-webapp --app-name tchamna-rag-ai-foundations-demo --resource-group "$AZURE_RG"
+          docker build -t $IMAGE_NAME -f Dockerfile.backend .
+          docker push $IMAGE_NAME
+
+      # 6. Configure Web App to Use Container
+      - name: Deploy to Web App
+        run: |
+          az webapp config container set \
+            --name tchamna-rag-ai-foundations-demo \
+            --resource-group $AZURE_RG \
+            --docker-custom-image-name $IMAGE_NAME \
+            --docker-registry-server-url https://$LOGIN_SERVER \
+            --docker-registry-server-user ${{ secrets.ACR_SP_APPID }} \
+            --docker-registry-server-password ${{ secrets.ACR_SP_PASSWORD }}
+
+          az webapp config appsettings set \
+            --resource-group $AZURE_RG \
+            --name tchamna-rag-ai-foundations-demo \
+            --settings WEBSITES_PORT=8000
+
+      # 7. Restart Web App (so it pulls the new container)
+      - name: Restart Web App
+        run: |
+          az webapp restart \
+            --name tchamna-rag-ai-foundations-demo \
+            --resource-group $AZURE_RG
