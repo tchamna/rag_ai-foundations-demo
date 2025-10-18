@@ -25,3 +25,4 @@ assets/pitch.rtf
 .streamlit/
 
 federated.json
+*.tar

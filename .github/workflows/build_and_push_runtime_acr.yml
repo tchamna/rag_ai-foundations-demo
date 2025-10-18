@@ -22,6 +22,21 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           allow-no-subscriptions: true
 
+      - name: Ensure subscription and verify ACR
+        run: |
+          # Make sure we operate in the expected subscription
+          if [ -n "${{ secrets.AZURE_SUBSCRIPTION_ID }}" ]; then
+            az account set --subscription "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
+            echo "Using subscription: $(az account show --query '{name:name, id:id}' -o tsv)"
+          fi
+
+          # Verify the ACR exists before trying to build
+          if ! az acr show --name "${{ secrets.ACR_NAME }}" >/dev/null 2>&1; then
+            echo "ERROR: ACR '${{ secrets.ACR_NAME }}' not found in subscription '${{ secrets.AZURE_SUBSCRIPTION_ID }}'." >&2
+            echo "Make sure you set the repository secret ACR_NAME to the actual registry name (e.g. ragfoundationsdemoregistry)." >&2
+            exit 1
+          fi
+
       - name: ACR build (build in Azure, no large push from runner)
         run: |
           az acr build --registry ${{ secrets.ACR_NAME }} --image rag_ai_backend:runtime-minimal -f Dockerfile.runtime .
