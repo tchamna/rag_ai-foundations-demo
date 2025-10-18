@@ -1,0 +1,33 @@
+name: Build & push runtime image to ACR (cloud build)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  acr-build:
+    name: ACR Build (uses Azure OIDC or AZURE credentials)
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Login to Azure with OIDC (preferred)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+
+      - name: ACR build (build in Azure, no large push from runner)
+        run: |
+          az acr build --registry ${{ secrets.ACR_NAME }} --image rag_ai_backend:runtime-minimal -f Dockerfile.runtime .
+
+      - name: Update App Service to use ACR image (optional)
+        if: ${{ secrets.AZURE_APP_NAME != '' }}
+        run: |
+          # Update the Web App container settings to point at the new tag
+          az webapp config container set --name ${{ secrets.AZURE_APP_NAME }} --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} --docker-custom-image-name ${{ secrets.ACR_LOGIN_SERVER }}/rag_ai_backend:runtime-minimal --docker-registry-server-url https://${{ secrets.ACR_LOGIN_SERVER }}
