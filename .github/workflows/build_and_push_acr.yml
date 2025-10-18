@@ -35,6 +35,10 @@ jobs:
           IMAGE_NAME="$LOGIN_SERVER/${{ github.repository }}:latest"
           echo "IMAGE_NAME=$IMAGE_NAME" >> $GITHUB_OUTPUT
 
+      - name: Set AZURE_RG env
+        run: |
+          echo "AZURE_RG=${{ secrets.AZURE_RG }}" >> $GITHUB_ENV
+
       - name: Build Docker image
         run: |
           echo "Building image ${{ steps.vars.outputs.IMAGE_NAME }}"
@@ -49,10 +53,11 @@ jobs:
           docker push "${{ steps.vars.outputs.IMAGE_NAME }}"
 
       - name: Configure App Service to use container image
+        env:
+          APP_NAME: 'tchamna-rag-ai-foundations-demo'
+          AZURE_RG: ${{ env.AZURE_RG }}
         run: |
-          APP_NAME='tchamna-rag-ai-foundations-demo'
-          RG=$(az webapp show --name "$APP_NAME" --query resourceGroup -o tsv)
-          echo "Using resource group: $RG"
-          az webapp config container set --name "$APP_NAME" --resource-group "$RG" --docker-custom-image-name "${{ steps.vars.outputs.IMAGE_NAME }}" --docker-registry-server-url "https://${{ steps.vars.outputs.LOGIN_SERVER }}"
+          echo "Using resource group: $AZURE_RG"
+          az webapp config container set --name "$APP_NAME" --resource-group "$AZURE_RG" --docker-custom-image-name "${{ steps.vars.outputs.IMAGE_NAME }}" --docker-registry-server-url "https://${{ steps.vars.outputs.LOGIN_SERVER }}"
           # Ensure WEBSITES_PORT reflects the internal port exposed by the image (8000)
-          az webapp config appsettings set --resource-group "$RG" --name "$APP_NAME" --settings WEBSITES_PORT=8000
+          az webapp config appsettings set --resource-group "$AZURE_RG" --name "$APP_NAME" --settings WEBSITES_PORT=8000

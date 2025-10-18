@@ -26,6 +26,21 @@ jobs:
 
       # 🛠️ Local Build Section (Optional)
       # The following section in your workflow is designed to catch build issues early on the client side, before deployment. This can be helpful for debugging and validation. However, if this step significantly increases deployment time and early detection is not critical for your workflow, you may remove this section to streamline the deployment process.
+      # Try to reduce runner disk usage before installing heavy dependencies
+      - name: Clean up to free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc || true
+          sudo rm -rf /usr/local/share/dotnet || true
+          df -h
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
       - name: Create and Start virtual environment and Install dependencies
         run: |
           python -m venv antenv
@@ -54,6 +69,9 @@ jobs:
       id-token: write #This is required for requesting the JWT
       contents: read #This is required for actions/checkout
 
+    env:
+      AZURE_RG: ${{ secrets.AZURE_RG }}
+
     steps:
       - name: Download artifact from build job
         uses: actions/download-artifact@v4
@@ -75,10 +93,11 @@ jobs:
           slot-name: 'Production'
       
       - name: Configure App Service (set port and startup)
+        env:
+          APP_NAME: 'tchamna-rag-ai-foundations-demo'
+          AZURE_RG: ${{ env.AZURE_RG }}
         run: |
-          APP_NAME='tchamna-rag-ai-foundations-demo'
-          RG=$(az webapp show --name "$APP_NAME" --query resourceGroup -o tsv)
-          echo "Discovered resource group: $RG"
-          az webapp config appsettings set --resource-group "$RG" --name "$APP_NAME" --settings WEBSITES_PORT=8000
-          az webapp config set --resource-group "$RG" --name "$APP_NAME" --startup-file "./startup.sh"
+          echo "Using resource group: $AZURE_RG"
+          az webapp config appsettings set --resource-group "$AZURE_RG" --name "$APP_NAME" --settings WEBSITES_PORT=8000
+          az webapp config set --resource-group "$AZURE_RG" --name "$APP_NAME" --startup-file "./startup.sh"
           
