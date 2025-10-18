@@ -10,6 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      id-token: write
 
     steps:
       - name: Checkout
@@ -39,25 +40,18 @@ jobs:
         run: |
           echo "AZURE_RG=${{ secrets.AZURE_RG }}" >> $GITHUB_ENV
 
-      - name: Build Docker image
-        run: |
-          echo "Building image ${{ steps.vars.outputs.IMAGE_NAME }}"
-          docker build -f Dockerfile.backend -t "${{ steps.vars.outputs.IMAGE_NAME }}" .
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
-      - name: Login to ACR
+      - name: Install requirements for ACR helper
         run: |
-          az acr login --name ${{ secrets.ACR_NAME }}
+          python -m pip install --upgrade pip
 
-      - name: Push image to ACR
-        run: |
-          docker push "${{ steps.vars.outputs.IMAGE_NAME }}"
-
-      - name: Configure App Service to use container image
+      - name: Run push_to_acr script
         env:
-          APP_NAME: 'tchamna-rag-ai-foundations-demo'
-          AZURE_RG: ${{ env.AZURE_RG }}
+          ACR_NAME: ${{ secrets.ACR_NAME }}
+          AZURE_RG: ${{ secrets.AZURE_RG }}
         run: |
-          echo "Using resource group: $AZURE_RG"
-          az webapp config container set --name "$APP_NAME" --resource-group "$AZURE_RG" --docker-custom-image-name "${{ steps.vars.outputs.IMAGE_NAME }}" --docker-registry-server-url "https://${{ steps.vars.outputs.LOGIN_SERVER }}"
-          # Ensure WEBSITES_PORT reflects the internal port exposed by the image (8000)
-          az webapp config appsettings set --resource-group "$AZURE_RG" --name "$APP_NAME" --settings WEBSITES_PORT=8000
+          python scripts/push_to_acr.py --acr-name "$ACR_NAME" --repo "${{ github.repository }}" --tag latest --dockerfile Dockerfile.backend --context . --configure-webapp --app-name tchamna-rag-ai-foundations-demo --resource-group "$AZURE_RG"
