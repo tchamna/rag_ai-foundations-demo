@@ -2,7 +2,7 @@ def get_theme_css(dark_mode: bool) -> str:
     """Return HTML/CSS string for Streamlit theme.
 
     Keep CSS here so app_streamlit.py stays clean. dark_mode toggles dark vs light.
-    """
+    """download-csv
     if dark_mode:
         return r"""
         <style>
