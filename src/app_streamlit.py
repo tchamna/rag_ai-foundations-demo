@@ -19,14 +19,36 @@ def _clean_phrase(s: str) -> str:
     return out.strip()
 
 from rag_pipeline import RAGPipeline, load_corpus, build_documents, VectorIndex
-from config import DATA_DIR, VECTORSTORE_DIR, TOP_K, SIM_THRESHOLD, USE_RERANKER
+from src.config import DATA_DIR, VECTORSTORE_DIR, TOP_K, SIM_THRESHOLD, USE_RERANKER
+from src.theme import get_theme_css
 
 # -------------------------
 # Page Setup
 # -------------------------
-st.set_page_config(page_title="Banking & Fe'efe'e Assistant (RAG Demo)", layout="wide")
-st.title("🏦 Banking & Fe'efe'e Assistant — RAG Demo")
+st.set_page_config(page_title="Banking Assistant (RAG Demo)", layout="wide")
+st.title("🏦 Banking Assistant — RAG Demo")
 st.caption("Demo with FAISS + SentenceTransformers + FLAN-T5 or ChatGPT | Upload docs and ask questions.")
+
+# -------------------------
+# Session State
+# -------------------------
+if "transcript" not in st.session_state:
+    st.session_state["transcript"] = []
+if "dark_mode" not in st.session_state:
+    st.session_state["dark_mode"] = True
+
+# -------------------------
+# Theme Toggle
+# -------------------------
+if st.sidebar.button("Toggle Dark Mode"):
+    st.session_state["dark_mode"] = not st.session_state["dark_mode"]
+    st.rerun()
+
+# Apply theme via centralized theme provider
+if st.session_state["dark_mode"]:
+    st.markdown(get_theme_css(True), unsafe_allow_html=True)
+else:
+    st.markdown(get_theme_css(False), unsafe_allow_html=True)
 
 # -------------------------
 # Sidebar — Index Builder
@@ -75,12 +97,6 @@ st.sidebar.header("Answer Generator")
 use_chatgpt = st.sidebar.checkbox("Use ChatGPT API instead of FLAN-T5", value=False)
 
 # -------------------------
-# Session State
-# -------------------------
-if "transcript" not in st.session_state:
-    st.session_state["transcript"] = []
-
-# -------------------------
 # Post-processor for citations
 # -------------------------
 def enforce_citations(answer: str, contexts):
@@ -94,71 +110,40 @@ def enforce_citations(answer: str, contexts):
 # -------------------------
 # Main — Q&A
 # -------------------------
-st.subheader("Ask a question")
-query = st.text_input(
-    "e.g., What is the ATM withdrawal limit? How to say 'I love you' in Fe'efe'e?"
-)
-
-# Both Enter and Button trigger
-trigger = st.button("Get Answer") or (
-    query.strip() and st.session_state.get("last_query") != query.strip()
-)
-
+# Two-column layout: main Q&A (col1) + retrieval preview (col2)
 col1, col2 = st.columns([2, 1])
 
 with col1:
-    if trigger and query.strip():
+    st.subheader("Ask a question")
+    query = st.text_input("e.g., What is the ATM withdrawal limit? How to say 'I love you' in Fe'efe'e?", key="query_input")
+
+    # Query handling
+    if query and query.strip():
         try:
-            # rag = RAGPipeline(VECTORSTORE_DIR, use_chatgpt=use_chatgpt)
             rag = RAGPipeline(
                 VECTORSTORE_DIR,
                 use_chatgpt=use_chatgpt,
-                use_reranker=USE_RERANKER,               # controlled by config
-                refine_phrasebook_with_gpt=False # disable GPT polishing of phrasebook hits
+                use_reranker=USE_RERANKER,
+                refine_phrasebook_with_gpt=False,
             )
 
             rag.ensure_loaded()
+            ctxs = rag.retrieve(query.strip(), TOP_K)
+            result = rag.answer(query.strip(), ctxs)
 
-            if use_chatgpt:
+            mode = result.get("mode", "")
+            if mode in ("gpt", "phrasebook+gpt"):
                 st.info("⚡ Using ChatGPT API for generation")
-            else:
+            elif mode == "flan":
                 st.info("🧠 Using local FLAN-T5 model")
+            elif mode == "faq":
+                st.success("✅ Direct FAQ match (no generator)")
+            elif mode == "phrasebook":
+                st.success("✅ Direct phrasebook match (no generator)")
+            elif mode == "fallback":
+                st.warning("↩️ Fallback to top chunk text")
 
-            # Retrieve and apply similarity threshold. If threshold filters out
-            # all candidates, fall back to the top-k retrieved chunks so the
-            # generator still has something to work with (better UX than
-            # returning no answer when low-scoring but relevant chunks exist).
-            retrieved = rag.retrieve(query.strip(), TOP_K)
-            ctxs = [c for c in retrieved if c.get("score", 0.0) >= threshold]
-
-            # Fallback: if similarity threshold removed everything but we did
-            # retrieve items, use the top-k retrieved (and warn the user).
-            if not ctxs and retrieved:
-                st.warning(
-                    "No chunks passed the similarity threshold — falling back to the top retrieved chunks.\n"
-                    "Consider lowering the 'Similarity threshold' in the sidebar if you want stricter filtering."
-                )
-                ctxs = retrieved[:TOP_K]
-
-            if not ctxs:
-                fixed_answer = "I could not find this in the documents."
-                result = {"prompt": "No contexts found."}
-            else:
-                result = rag.answer(query.strip(), ctxs)
-                
-                mode = result.get("mode", "")
-                if mode in ("gpt", "phrasebook+gpt"):
-                    st.info("⚡ Using ChatGPT API for generation")
-                elif mode == "flan":
-                    st.info("🧠 Using local FLAN-T5 model")
-                elif mode == "faq":
-                    st.success("✅ Direct FAQ match (no generator)")
-                elif mode == "phrasebook":
-                    st.success("✅ Direct phrasebook match (no generator)")
-                elif mode == "fallback":
-                    st.warning("↩️ Fallback to top chunk text")
-                    
-                fixed_answer = result["answer"]
+            fixed_answer = result["answer"]
 
             st.markdown("### Answer")
             st.write(fixed_answer)
@@ -181,11 +166,13 @@ with col1:
 
             if ctxs:
                 with st.expander("Show prompt (debug)"):
-                    st.code(result["prompt"], language="text")
+                    st.code(result.get("prompt", ""), language="text")
 
         except FileNotFoundError as e:
             st.error(str(e))
             st.info("Use the sidebar to build the vector store first.")
+        except Exception as e:
+            st.error(f"Error during query: {e}")
 
     # -------------------------
     # Transcript Download
@@ -270,19 +257,7 @@ with col1:
                 r[k] = _nfc(r.get(k, ""))
 
         df = pd.DataFrame(rows)
-        csv_text = df.to_csv(index=False)
-        csv_bytes = csv_text.encode("utf-8-sig")  # BOM + UTF-8 bytes
-
-        # CSV download (UTF-8 BOM encoded)
-        st.download_button(
-            "📥 Download Transcript (CSV)",
-            data=csv_bytes,
-            file_name="qa_transcript.csv",
-            mime="text/csv",
-            key="download-csv",
-        )
-
-        # Also provide an XLSX download which usually avoids encoding issues
+        # Only provide an XLSX download which usually avoids encoding/locale issues
         with io.BytesIO() as output:
             with pd.ExcelWriter(output, engine="openpyxl") as writer:
                 df.to_excel(writer, index=False, sheet_name="transcript")
@@ -295,6 +270,8 @@ with col1:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key="download-xlsx",
         )
+
+    # (duplicate transcript block removed)
 
 with col2:
     st.markdown("### Retrieved Chunks")
@@ -325,28 +302,35 @@ with col2:
         st.caption("⚠️ Build the index to preview retrieved chunks.")
 
 # -------------------------
-# Sidebar — Vector DB Browser
+# Vector DB Browser (moved into main layout on the right column)
 # -------------------------
-st.sidebar.header("🔎 Vector DB Browser")
-
-if st.sidebar.checkbox("Enable Browser"):
+with col2:
+    st.markdown("### Vector DB Browser")
     try:
         with open(VECTORSTORE_DIR / "docs.pkl", "rb") as f:
             docs = pickle.load(f)
-        st.sidebar.success(f"✅ Loaded {len(docs)} chunks")
+        st.success(f"✅ Loaded {len(docs)} chunks")
 
-        search_term = st.sidebar.text_input("Search chunks (optional)")
+        search_term = st.text_input("Search chunks (optional)", key="vector_search")
         if search_term:
             filtered_docs = [d for d in docs if search_term.lower() in d["text"].lower()]
-            st.sidebar.write(f"Found {len(filtered_docs)} matching chunks")
+            st.write(f"Found {len(filtered_docs)} matching chunks")
         else:
             filtered_docs = docs
 
-        max_show = st.sidebar.slider("How many to display?", 5, 50, 10)
+        max_show = st.slider("How many to display?", 5, 50, 10, key="vector_max_show")
 
         for i, d in enumerate(filtered_docs[:max_show]):
             with st.expander(f"Chunk {i+1} — {d['meta'].get('source','N/A')}"):
                 st.text(d["text"])
 
+    except FileNotFoundError:
+        st.warning("No docs found. Build the vector store to enable browsing.")
+        if st.button("Build vector store now", key="vector_rebuild"):
+            try:
+                rebuild_index()
+                st.experimental_rerun()
+            except Exception as e:
+                st.error(f"Build failed: {e}")
     except Exception as e:
-        st.sidebar.error(f"Could not load docs.pkl: {e}")
+        st.error(f"Could not load docs.pkl: {e}")
