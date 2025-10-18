@@ -168,12 +168,13 @@ with col1:
 
     # Chat message area (render transcript)
     chat_container = st.container()
+    Assistant_name = "Shck Tchamna"
     with chat_container:
         for msg in st.session_state.get("transcript", []):
             if msg.get("role") == "user":
                 st.markdown(f"**You:** {msg.get('text')}")
             else:
-                st.markdown(f"**Assistant:** {msg.get('text')}" )
+                st.markdown(f"**{Assistant_name}:** {msg.get('text')}" )
 
     # Input box that submits on Enter via on_change
     st.text_input("", key="chat_input", placeholder="Type a message and press Enter", on_change=handle_submit)
