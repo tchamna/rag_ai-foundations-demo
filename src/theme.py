@@ -48,6 +48,15 @@ def get_theme_css(dark_mode: bool) -> str:
         }
 
         input, textarea, select, .stTextInput input, .stTextArea textarea, .stSelectbox select, .stFileUploader { background: var(--card) !important; color: var(--text) !important; border: 1px solid var(--border) !important; }
+        /* Make placeholder text more visible in dark mode */
+        input::placeholder,
+        textarea::placeholder,
+        .stTextInput input::placeholder,
+        .stTextArea textarea::placeholder,
+        .stFileUploader input::placeholder {
+            color: var(--muted) !important;
+            opacity: 1 !important;
+        }
         .stFileUploader div, .stFileUploader span, .stFileUploader p { color: var(--muted) !important; }
 
         label, .stTextInput label, .stSelectbox label, .stSlider label, .stCheckbox label, .stRadio label, .stTextArea label { color: var(--muted) !important; }
