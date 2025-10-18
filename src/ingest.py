@@ -2,7 +2,7 @@ import argparse
 from pathlib import Path
 
 from rag_pipeline import load_corpus, build_documents, VectorIndex
-from config import DATA_DIR, VECTORSTORE_DIR
+from src.config import DATA_DIR, VECTORSTORE_DIR
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

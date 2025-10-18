@@ -16,7 +16,7 @@ from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 from openai import OpenAI
 
 
-from config import (
+from src.config import (
     DATA_DIR, VECTORSTORE_DIR, EMBEDDING_MODEL, GENERATION_MODEL,
     CHUNK_SIZE, CHUNK_OVERLAP, TOP_K, SIM_THRESHOLD
 )

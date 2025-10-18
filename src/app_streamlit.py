@@ -22,6 +22,19 @@ from rag_pipeline import RAGPipeline, load_corpus, build_documents, VectorIndex
 from src.config import DATA_DIR, VECTORSTORE_DIR, TOP_K, SIM_THRESHOLD, USE_RERANKER
 from src.theme import get_theme_css
 
+
+# Cached RAG pipeline factory to avoid reinitializing models on every submit
+@st.cache_resource
+def get_rag_pipeline(use_chatgpt_flag: bool, use_reranker_flag: bool):
+    rp = RAGPipeline(
+        VECTORSTORE_DIR,
+        use_chatgpt=use_chatgpt_flag,
+        use_reranker=use_reranker_flag,
+        refine_phrasebook_with_gpt=False,
+    )
+    rp.ensure_loaded()
+    return rp
+
 # -------------------------
 # Page Setup
 # -------------------------
@@ -90,6 +103,10 @@ threshold = st.sidebar.slider(
     "Similarity threshold", 0.0, 1.0, SIM_THRESHOLD, 0.05
 )
 
+# runtime override for top_k and reranker to speed up/slow down behavior
+runtime_top_k = st.sidebar.slider("Top K (retrieval)", 1, 20, TOP_K)
+runtime_use_reranker = st.sidebar.checkbox("Use reranker (may be slower)", value=USE_RERANKER)
+
 # -------------------------
 # Sidebar — Choose Generator
 # -------------------------
@@ -114,65 +131,52 @@ def enforce_citations(answer: str, contexts):
 col1, col2 = st.columns([2, 1])
 
 with col1:
-    st.subheader("Ask a question")
-    query = st.text_input("e.g., What is the ATM withdrawal limit? How to say 'I love you' in Fe'efe'e?", key="query_input")
+    st.subheader("Chat — ask a question")
 
-    # Query handling
-    if query and query.strip():
+    # Prepare session state for chat messages and input
+    if "chat_input" not in st.session_state:
+        st.session_state["chat_input"] = ""
+    if "transcript" not in st.session_state:
+        st.session_state["transcript"] = []
+
+    def handle_submit():
+        user_text = st.session_state.get("chat_input", "").strip()
+        if not user_text:
+            return
+
+        # Append user message immediately (chat UI)
+        st.session_state["transcript"].append({"role": "user", "text": user_text})
+
+        # clear input for next message
+        st.session_state["chat_input"] = ""
+
         try:
-            rag = RAGPipeline(
-                VECTORSTORE_DIR,
-                use_chatgpt=use_chatgpt,
-                use_reranker=USE_RERANKER,
-                refine_phrasebook_with_gpt=False,
-            )
+            # Use cached pipeline to avoid reloading models each submit
+            rag = get_rag_pipeline(use_chatgpt, runtime_use_reranker)
+            with st.spinner("Running retrieval and generation..."):
+                ctxs = rag.retrieve(user_text, runtime_top_k)
+                result = rag.answer(user_text, ctxs)
 
-            rag.ensure_loaded()
-            ctxs = rag.retrieve(query.strip(), TOP_K)
-            result = rag.answer(query.strip(), ctxs)
+            assistant_text = result.get("answer", "(no answer)")
 
-            mode = result.get("mode", "")
-            if mode in ("gpt", "phrasebook+gpt"):
-                st.info("⚡ Using ChatGPT API for generation")
-            elif mode == "flan":
-                st.info("🧠 Using local FLAN-T5 model")
-            elif mode == "faq":
-                st.success("✅ Direct FAQ match (no generator)")
-            elif mode == "phrasebook":
-                st.success("✅ Direct phrasebook match (no generator)")
-            elif mode == "fallback":
-                st.warning("↩️ Fallback to top chunk text")
-
-            fixed_answer = result["answer"]
-
-            st.markdown("### Answer")
-            st.write(fixed_answer)
-
-            # Save transcript with contexts
-            st.session_state["transcript"].append({
-                "question": query.strip(),
-                "answer": fixed_answer,
-                "contexts": [
-                    {
-                        "source": c["meta"]["source"],
-                        "text": c["text"],
-                        "score": c.get("score", None)
-                    }
-                    for c in ctxs
-                ]
-            })
-
-            st.session_state["last_query"] = query.strip()
-
-            if ctxs:
-                with st.expander("Show prompt (debug)"):
-                    st.code(result.get("prompt", ""), language="text")
-
+            # Append assistant reply
+            st.session_state["transcript"].append({"role": "assistant", "text": assistant_text, "contexts": ctxs, "prompt": result.get("prompt")})
         except FileNotFoundError as e:
-            st.error(str(e))
-            st.info("Use the sidebar to build the vector store first.")
+            st.session_state["transcript"].append({"role": "assistant", "text": f"Error: {e}. Build the vector store first."})
         except Exception as e:
-            st.error(f"Error during query: {e}")
+            st.session_state["transcript"].append({"role": "assistant", "text": f"Error during query: {e}"})
+
+    # Chat message area (render transcript)
+    chat_container = st.container()
+    with chat_container:
+        for msg in st.session_state.get("transcript", []):
+            if msg.get("role") == "user":
+                st.markdown(f"**You:** {msg.get('text')}")
+            else:
+                st.markdown(f"**Assistant:** {msg.get('text')}" )
+
+    # Input box that submits on Enter via on_change
+    st.text_input("", key="chat_input", placeholder="Type a message and press Enter", on_change=handle_submit)
 
     # -------------------------
     # Transcript Download
@@ -181,19 +185,50 @@ with col1:
         st.subheader("Download Q&A Transcript")
 
         rows = []
-        for i, item in enumerate(st.session_state["transcript"], 1):
-            q = item.get("question", "")
-            a = item.get("answer", "")
-            ctxs = item.get("contexts", [])
 
+        # Support both legacy QA entries and role-based chat transcripts.
+        # Build a list of QA pairs: (question_text, answer_text, contexts)
+        qa_pairs = []
+
+        # If transcript entries already have 'question' keys, use them directly
+        legacy_entries = all(isinstance(it, dict) and ("question" in it or "answer" in it) for it in st.session_state.get("transcript", []))
+        if legacy_entries:
+            for item in st.session_state.get("transcript", []):
+                q = item.get("question", "")
+                a = item.get("answer", "")
+                ctxs = item.get("contexts", [])
+                qa_pairs.append((q, a, ctxs))
+        else:
+            # Walk through role-based messages and pair user -> next assistant
+            msgs = st.session_state.get("transcript", [])
+            i = 0
+            while i < len(msgs):
+                m = msgs[i]
+                if m.get("role") == "user":
+                    q_text = m.get("text", "")
+                    # find next assistant message
+                    a_text = ""
+                    a_ctxs = []
+                    j = i + 1
+                    while j < len(msgs):
+                        if msgs[j].get("role") == "assistant":
+                            a_text = msgs[j].get("text", "")
+                            a_ctxs = msgs[j].get("contexts", []) or msgs[j].get("ctxs", []) or []
+                            break
+                        j += 1
+                    qa_pairs.append((q_text, a_text, a_ctxs))
+                    i = j + 1
+                else:
+                    i += 1
+
+        # Now expand qa_pairs into rows (one row per context, or a single N/A row)
+        for idx, (q, a, ctxs) in enumerate(qa_pairs, 1):
             if ctxs:
                 for ctx in ctxs:
                     raw = ctx.get("text", "N/A")
-                    # try to parse phrasebook style: English / Fe'efe'e / French
                     eng = None
                     feefee = None
                     fr = None
-                    # first try the pipe-delimited style
                     if "|" in raw:
                         parts = [p.strip() for p in raw.split("|")]
                         if len(parts) == 3:
@@ -201,7 +236,6 @@ with col1:
                             eng = _clean_phrase(eng)
                             feefee = _clean_phrase(feefee)
                             fr = _clean_phrase(fr)
-                    # fallback to labeled format
                     if (not eng) and "Fe'efe'e:" in raw:
                         try:
                             if "English:" in raw:
@@ -216,14 +250,13 @@ with col1:
                         except Exception:
                             pass
 
-                    # final cleaned chunk text (prefer feefee then english then raw)
                     cleaned_chunk = feefee or eng or raw
 
                     rows.append({
-                        "Q#": i,
+                        "Q#": idx,
                         "Question": q,
                         "Answer": a,
-                        "Source": ctx.get("source", "N/A"),
+                        "Source": ctx.get("meta", {}).get("source", ctx.get("source", "N/A")),
                         "Chunk Text": cleaned_chunk,
                         "English": eng,
                         "Fe'efe'e": feefee,
@@ -232,7 +265,7 @@ with col1:
                     })
             else:
                 rows.append({
-                    "Q#": i,
+                    "Q#": idx,
                     "Question": q,
                     "Answer": a,
                     "Source": "N/A",
@@ -273,19 +306,20 @@ with col1:
 
     # (duplicate transcript block removed)
 
+# Determine the most recent user query from the transcript (fallback to 'introductions')
+last_user = ""
+for m in reversed(st.session_state.get("transcript", [])):
+    if m.get("role") == "user":
+        last_user = m.get("text", "")
+        break
+current_query = last_user.strip() if last_user and last_user.strip() else "introductions"
+
 with col2:
     st.markdown("### Retrieved Chunks")
     try:
-        # rag = RAGPipeline(VECTORSTORE_DIR, use_chatgpt=use_chatgpt)
-        rag = RAGPipeline(
-            VECTORSTORE_DIR,
-            use_chatgpt=use_chatgpt,
-            use_reranker=USE_RERANKER,
-            refine_phrasebook_with_gpt=False, # disable GPT polishing of phrasebook hits
-        )
-
-        rag.ensure_loaded()
-        ctxs = rag.retrieve(query if query.strip() else "introductions", TOP_K)
+        # Use cached pipeline and runtime_top_k
+        rag = get_rag_pipeline(use_chatgpt, runtime_use_reranker)
+        ctxs = rag.retrieve(current_query, runtime_top_k)
         for i, c in enumerate(ctxs, 1):
             with st.expander(
                 f"🔎 Chunk {i} — {c['meta']['source']} (score={c['score']:.3f})",

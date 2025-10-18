@@ -1,6 +1,6 @@
 import gradio as gr
 from rag_pipeline import RAGPipeline, load_corpus, build_documents, VectorIndex
-from config import DATA_DIR, VECTORSTORE_DIR, TOP_K, SIM_THRESHOLD, USE_RERANKER
+from src.config import DATA_DIR, VECTORSTORE_DIR, TOP_K, SIM_THRESHOLD, USE_RERANKER
 import os
 import io
 import pandas as pd
@@ -90,7 +90,7 @@ def qa_fn(question: str, threshold: float, use_chatgpt: bool):
 
 
 with gr.Blocks() as demo:
-    gr.Markdown("# Banking & Fe'efe'e Assistant — Gradio Demo")
+    gr.Markdown("# Banking Assistant — Gradio Demo")
 
     with gr.Row():
         with gr.Column(scale=3):

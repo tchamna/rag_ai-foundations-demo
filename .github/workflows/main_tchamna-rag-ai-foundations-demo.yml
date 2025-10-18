@@ -73,4 +73,12 @@ jobs:
         with:
           app-name: 'tchamna-rag-ai-foundations-demo'
           slot-name: 'Production'
+      
+      - name: Configure App Service (set port and startup)
+        run: |
+          APP_NAME='tchamna-rag-ai-foundations-demo'
+          RG=$(az webapp show --name "$APP_NAME" --query resourceGroup -o tsv)
+          echo "Discovered resource group: $RG"
+          az webapp config appsettings set --resource-group "$RG" --name "$APP_NAME" --settings WEBSITES_PORT=8000
+          az webapp config set --resource-group "$RG" --name "$APP_NAME" --startup-file "./startup.sh"
           
