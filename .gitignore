@@ -23,3 +23,5 @@ assets/pitch.rtf
 .vscode/
 .idea/
 .streamlit/
+
+federated.json

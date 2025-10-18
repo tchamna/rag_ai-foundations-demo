@@ -9,7 +9,7 @@ jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     permissions:
-      id-token: write
+      id-token: write   # required for OIDC
       contents: read
 
     steps:
@@ -17,13 +17,14 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 2. Login to Azure with Service Principal
-      - name: Azure Login
-        uses: azure/login@v2
+      # 2. Azure OIDC Login
+      - name: Azure Login (OIDC)
+        uses: azure/login@v1
         with:
-          client-id: ${{ secrets.ACR_SP_APPID }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          auth-type: 'OIDC'
 
       # 3. Set variables
       - name: Set variables
@@ -37,34 +38,28 @@ jobs:
           echo "IMAGE_NAME=$IMAGE_NAME" >> $GITHUB_ENV
           echo "Using image: $IMAGE_NAME"
 
-      # 4. ACR Docker Login
-      - name: ACR Docker Login
-        run: |
-          az acr login --name $ACR_NAME
-
-      # 5. Build and Push Docker Image
+      # 4. Build and Push Docker Image
       - name: Build and Push Image
         run: |
           docker build -t $IMAGE_NAME -f Dockerfile.backend .
+          az acr login --name $ACR_NAME
           docker push $IMAGE_NAME
 
-      # 6. Configure Web App to Use Container
+      # 5. Configure Web App to Use Container
       - name: Deploy to Web App
         run: |
           az webapp config container set \
             --name tchamna-rag-ai-foundations-demo \
             --resource-group $AZURE_RG \
             --docker-custom-image-name $IMAGE_NAME \
-            --docker-registry-server-url https://$LOGIN_SERVER \
-            --docker-registry-server-user ${{ secrets.ACR_SP_APPID }} \
-            --docker-registry-server-password ${{ secrets.ACR_SP_PASSWORD }}
+            --docker-registry-server-url https://$LOGIN_SERVER
 
           az webapp config appsettings set \
             --resource-group $AZURE_RG \
             --name tchamna-rag-ai-foundations-demo \
             --settings WEBSITES_PORT=8000
 
-      # 7. Restart Web App (so it pulls the new container)
+      # 6. Restart Web App
       - name: Restart Web App
         run: |
           az webapp restart \
