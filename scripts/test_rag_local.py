@@ -1,4 +1,4 @@
-from rag_pipeline import RAGPipeline
+from src.rag_pipeline import RAGPipeline
 from config import VECTORSTORE_DIR, TOP_K, USE_RERANKER
 
 

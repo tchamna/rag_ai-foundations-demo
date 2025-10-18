@@ -1,5 +1,4 @@
 streamlit>=1.25.0
-gradio>=4.0.0
 transformers>=4.30.0
 sentence-transformers>=2.2.2
 faiss-cpu>=1.7.4          # CPU-friendly FAISS build

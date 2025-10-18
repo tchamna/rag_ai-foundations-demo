@@ -18,7 +18,7 @@ def _clean_phrase(s: str) -> str:
     out = re.sub(r"^English:\s*", "", out, flags=re.I)
     return out.strip()
 
-from rag_pipeline import RAGPipeline, load_corpus, build_documents, VectorIndex
+from src.rag_pipeline import RAGPipeline, load_corpus, build_documents, VectorIndex
 from src.config import DATA_DIR, VECTORSTORE_DIR, TOP_K, SIM_THRESHOLD, USE_RERANKER
 from src.theme import get_theme_css
 

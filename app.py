@@ -1,8 +1,5 @@
-import os
-
-# Top-level entrypoint for Hugging Face Spaces (Gradio)
-# This imports the Gradio `demo` object from `src.app_gradio` and launches it.
-from src.app_gradio import demo
+import sys
 
 if __name__ == '__main__':
-    demo.launch(server_name="0.0.0.0", server_port=int(os.environ.get("PORT", 7860)))
+    print("This repository no longer exposes a Gradio demo. Run the FastAPI backend with uvicorn or use the Streamlit app in src/app_streamlit.py.")
+    sys.exit(0)

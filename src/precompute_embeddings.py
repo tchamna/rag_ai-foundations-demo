@@ -2,7 +2,7 @@ from pathlib import Path
 import sys
 
 try:
-    from rag_pipeline import load_corpus, build_documents, VectorIndex
+    from src.rag_pipeline import load_corpus, build_documents, VectorIndex
     from src.config import DATA_DIR, VECTORSTORE_DIR
 except ImportError as e:
     print("Missing dependency when importing project modules:", e)
