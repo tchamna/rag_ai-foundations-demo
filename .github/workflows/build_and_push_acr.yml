@@ -16,12 +16,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Login to Azure
-        uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_38DE833436A341C0A545448B11A88D9F }}
-          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_B88B45F0C5574C009FE3EA62FD610580 }}
-          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_C23CE36AE8084CF1ADB1219965C42869 }}
+      - name: Login to Azure (service principal)
+        run: |
+          az login --service-principal -u ${{ secrets.ACR_SP_APPID }} -p '${{ secrets.ACR_SP_PASSWORD }}' --tenant ${{ secrets.AZURE_TENANT_ID }}
 
       - name: Set variables
         id: vars
@@ -53,5 +50,9 @@ jobs:
         env:
           ACR_NAME: ${{ secrets.ACR_NAME }}
           AZURE_RG: ${{ secrets.AZURE_RG }}
+          ACR_SP_APPID: ${{ secrets.ACR_SP_APPID }}
+          ACR_SP_PASSWORD: ${{ secrets.ACR_SP_PASSWORD }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
         run: |
           python scripts/push_to_acr.py --acr-name "$ACR_NAME" --repo "${{ github.repository }}" --tag latest --dockerfile Dockerfile.backend --context . --configure-webapp --app-name tchamna-rag-ai-foundations-demo --resource-group "$AZURE_RG"
