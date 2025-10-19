@@ -44,5 +44,41 @@ jobs:
       - name: Update App Service to use ACR image (optional)
         if: ${{ secrets.AZURE_APP_NAME != '' }}
         run: |
-          # Update the Web App container settings to point at the new tag
-          az webapp config container set --name ${{ secrets.AZURE_APP_NAME }} --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} --docker-custom-image-name ${{ secrets.ACR_LOGIN_SERVER }}/rag_ai_backend:runtime-minimal --docker-registry-server-url https://${{ secrets.ACR_LOGIN_SERVER }}
+          # Determine registry login server (prefer explicit ACR_LOGIN_SERVER secret)
+          if [ -n "${{ secrets.ACR_LOGIN_SERVER }}" ]; then
+            REGISTRY=${{ secrets.ACR_LOGIN_SERVER }}
+          else
+            echo "ACR_LOGIN_SERVER not set, resolving from ACR_NAME '${{ secrets.ACR_NAME }}'"
+            REGISTRY=$(az acr show --name "${{ secrets.ACR_NAME }}" --query loginServer -o tsv)
+          fi
+
+          IMAGE="$REGISTRY/rag_ai_backend:runtime-minimal"
+          echo "Updating App Service '${{ secrets.AZURE_APP_NAME }}' to use image: $IMAGE"
+
+          az webapp config container set \
+            --name "${{ secrets.AZURE_APP_NAME }}" \
+            --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
+            --docker-custom-image-name "$IMAGE" \
+            --docker-registry-server-url "https://$REGISTRY"
+
+          # Ensure the app serves on port 8000 (matches the Dockerfile.runtime)
+          az webapp config appsettings set \
+            --name "${{ secrets.AZURE_APP_NAME }}" \
+            --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
+            --settings WEBSITES_PORT=8000
+
+          # Restart and show status + hostname
+          az webapp restart --name "${{ secrets.AZURE_APP_NAME }}" --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}"
+          echo "Waiting for webapp to report 'Running' state..."
+          for i in {1..12}; do
+            sleep 5
+            STATE=$(az webapp show --name "${{ secrets.AZURE_APP_NAME }}" --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" --query state -o tsv)
+            if [ "$STATE" = "Running" ]; then
+              echo "App is Running"
+              break
+            fi
+            echo "Current state: $STATE - retrying..."
+          done
+
+          echo "Web app info:"
+          az webapp show --name "${{ secrets.AZURE_APP_NAME }}" --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" --query "{defaultHostName:defaultHostName,state:state}" -o table
