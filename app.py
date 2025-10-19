@@ -1,5 +1,6 @@
-import sys
+import os
+import streamlit as st
 
-if __name__ == '__main__':
-    print("This repository no longer exposes a Gradio demo. Run the FastAPI backend with uvicorn or use the Streamlit app in src/app_streamlit.py.")
-    sys.exit(0)
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8000))
+    st.run("app.py", server_port=port, server_address="0.0.0.0")
