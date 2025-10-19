@@ -1,23 +1,18 @@
-name: Build and Deploy Container to ACR + App Service
+name: Build and deploy Container to ACR + Web App Slot
 
 on:
-  push:
-    branches: [ main ]
   workflow_dispatch:
 
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     permissions:
-      id-token: write   # required for OIDC
+      id-token: write
       contents: read
 
     steps:
-      # 1. Checkout repo
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      # 2. Azure OIDC Login
       - name: Azure Login
         uses: azure/login@v1
         with:
@@ -25,41 +20,39 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      # 3. Set variables (from secrets)
       - name: Set variables
         run: |
-          echo "ACR_NAME=${{ secrets.ACR_NAME }}" >> $GITHUB_ENV
-          echo "AZURE_RG=${{ secrets.AZURE_RG }}" >> $GITHUB_ENV
-          echo "APP_SERVICE_NAME=${{ secrets.APP_SERVICE_NAME }}" >> $GITHUB_ENV
-          LOGIN_SERVER=$(az acr show --name ${{ secrets.ACR_NAME }} --query loginServer -o tsv)
+          echo "ACR_NAME=ragfoundationsdemoregistry" >> $GITHUB_ENV
+          echo "AZURE_RG=rag-ai-foundations-demo-rg" >> $GITHUB_ENV
+          LOGIN_SERVER=$(az acr show --name ragfoundationsdemoregistry --query loginServer -o tsv)
           echo "LOGIN_SERVER=$LOGIN_SERVER" >> $GITHUB_ENV
           IMAGE_NAME=$LOGIN_SERVER/rag_ai_backend:latest
           echo "IMAGE_NAME=$IMAGE_NAME" >> $GITHUB_ENV
 
-      # 4. Build and Push Docker Image
       - name: Build and Push Image
         run: |
-          az acr login --name $ACR_NAME
           docker build -t $IMAGE_NAME -f Dockerfile.backend .
+          az acr login --name $ACR_NAME
           docker push $IMAGE_NAME
 
-      # 5. Deploy to Web App
-      - name: Deploy to Web App
+      - name: Deploy container to slot
         run: |
           az webapp config container set \
-            --name $APP_SERVICE_NAME \
+            --name tchamna-rag-ai-foundations-demo \
             --resource-group $AZURE_RG \
-            --container-image-name $IMAGE_NAME \
-            --container-registry-url https://$LOGIN_SERVER
+            --slot container-slot \
+            --docker-custom-image-name $IMAGE_NAME \
+            --docker-registry-server-url https://$LOGIN_SERVER
 
           az webapp config appsettings set \
             --resource-group $AZURE_RG \
-            --name $APP_SERVICE_NAME \
+            --name tchamna-rag-ai-foundations-demo \
+            --slot container-slot \
             --settings WEBSITES_PORT=8000
 
-      # 6. Restart Web App
-      - name: Restart Web App
+      - name: Restart container slot
         run: |
           az webapp restart \
-            --name $APP_SERVICE_NAME \
-            --resource-group $AZURE_RG
+            --name tchamna-rag-ai-foundations-demo \
+            --resource-group $AZURE_RG \
+            --slot container-slot
