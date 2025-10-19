@@ -1,15 +1,8 @@
 streamlit>=1.25.0
-transformers>=4.30.0
-sentence-transformers>=2.2.2
-faiss-cpu>=1.7.4          # CPU-friendly FAISS build
-scikit-learn>=1.2.2
 pandas>=2.2.2
 numpy>=1.25.2
 openpyxl>=3.1.2
-torch>=2.2.0             # Optional GPU if available on Cloud instance
-
-# Optional: OpenAI for ChatGPT integration (only required if using ChatGPT API)
-openai>=1.0.0
-fastapi>=0.95.0
-uvicorn>=0.22.0
+faiss-cpu>=1.7.4
+scikit-learn>=1.2.2
+# Optional: small utilities
 python-multipart>=0.0.5
