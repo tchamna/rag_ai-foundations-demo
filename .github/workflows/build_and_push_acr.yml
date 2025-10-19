@@ -9,13 +9,15 @@ jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     permissions:
-      id-token: write
+      id-token: write   # required for OIDC
       contents: read
 
     steps:
+      # 1. Checkout repo
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # 2. Azure OIDC Login
       - name: Azure Login
         uses: azure/login@v1
         with:
@@ -23,22 +25,25 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      # 3. Set variables (from secrets)
       - name: Set variables
         run: |
-          echo "ACR_NAME=ragfoundationsdemoregistry" >> $GITHUB_ENV
-          echo "AZURE_RG=rag-ai-foundations-demo-rg" >> $GITHUB_ENV
-          echo "APP_SERVICE_NAME=tchamna-rag-ai-foundations-demo" >> $GITHUB_ENV
-          LOGIN_SERVER=$(az acr show --name ragfoundationsdemoregistry --query loginServer -o tsv)
+          echo "ACR_NAME=${{ secrets.ACR_NAME }}" >> $GITHUB_ENV
+          echo "AZURE_RG=${{ secrets.AZURE_RG }}" >> $GITHUB_ENV
+          echo "APP_SERVICE_NAME=${{ secrets.APP_SERVICE_NAME }}" >> $GITHUB_ENV
+          LOGIN_SERVER=$(az acr show --name ${{ secrets.ACR_NAME }} --query loginServer -o tsv)
           echo "LOGIN_SERVER=$LOGIN_SERVER" >> $GITHUB_ENV
           IMAGE_NAME=$LOGIN_SERVER/rag_ai_backend:latest
           echo "IMAGE_NAME=$IMAGE_NAME" >> $GITHUB_ENV
 
+      # 4. Build and Push Docker Image
       - name: Build and Push Image
         run: |
           az acr login --name $ACR_NAME
           docker build -t $IMAGE_NAME -f Dockerfile.backend .
           docker push $IMAGE_NAME
 
+      # 5. Deploy to Web App
       - name: Deploy to Web App
         run: |
           az webapp config container set \
@@ -52,6 +57,7 @@ jobs:
             --name $APP_SERVICE_NAME \
             --settings WEBSITES_PORT=8000
 
+      # 6. Restart Web App
       - name: Restart Web App
         run: |
           az webapp restart \
