@@ -26,10 +26,17 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       # 3. Ensure subscription context
-      - name: Ensure subscription
-        run: az account set --subscription ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Ensure subscription context
+        run: |
+          az account set --subscription ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          echo "Subscription in use:"
+          az account show --query "{id:id, name:name}" -o table
 
-      # 4. Set variables (with hardcoded ACR name for debug)
+      # 4. Debug: list available ACRs
+      - name: List available ACRs
+        run: az acr list --query "[].{name:name,loginServer:loginServer,resourceGroup:resourceGroup}" -o table
+
+      # 5. Set variables
       - name: Set variables
         id: vars
         run: |
@@ -42,14 +49,14 @@ jobs:
           echo "IMAGE_NAME=$IMAGE_NAME" >> $GITHUB_ENV
           echo "Using image: $IMAGE_NAME"
 
-      # 5. Build and Push Docker Image
+      # 6. Build and Push Docker Image
       - name: Build and Push Image
         run: |
           docker build -t $IMAGE_NAME -f Dockerfile.backend .
           az acr login --name $ACR_NAME
           docker push $IMAGE_NAME
 
-      # 6. Configure Web App to Use Container
+      # 7. Configure Web App to Use Container
       - name: Deploy to Web App
         run: |
           az webapp config container set \
@@ -63,7 +70,7 @@ jobs:
             --name tchamna-rag-ai-foundations-demo \
             --settings WEBSITES_PORT=8000
 
-      # 7. Restart Web App
+      # 8. Restart Web App
       - name: Restart Web App
         run: |
           az webapp restart \
