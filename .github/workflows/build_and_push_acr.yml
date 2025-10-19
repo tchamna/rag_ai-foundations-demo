@@ -24,42 +24,46 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-          
 
-      # 3. Set variables
+      # 3. Ensure subscription context
+      - name: Ensure subscription
+        run: az account set --subscription ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # 4. Set variables (with hardcoded ACR name for debug)
       - name: Set variables
         id: vars
         run: |
-          echo "ACR_NAME=${{ secrets.ACR_NAME }}" >> $GITHUB_ENV
+          ACR_NAME="ragfoundationsdemoregistry"   # hardcoded for debugging
+          echo "ACR_NAME=$ACR_NAME" >> $GITHUB_ENV
           echo "AZURE_RG=${{ secrets.AZURE_RG }}" >> $GITHUB_ENV
-          LOGIN_SERVER=$(az acr show --name ${{ secrets.ACR_NAME }} --query loginServer -o tsv)
+          LOGIN_SERVER=$(az acr show --name $ACR_NAME --query loginServer -o tsv)
           echo "LOGIN_SERVER=$LOGIN_SERVER" >> $GITHUB_ENV
           IMAGE_NAME=$LOGIN_SERVER/${{ github.repository }}:latest
           echo "IMAGE_NAME=$IMAGE_NAME" >> $GITHUB_ENV
           echo "Using image: $IMAGE_NAME"
 
-      # 4. Build and Push Docker Image
+      # 5. Build and Push Docker Image
       - name: Build and Push Image
         run: |
           docker build -t $IMAGE_NAME -f Dockerfile.backend .
           az acr login --name $ACR_NAME
           docker push $IMAGE_NAME
 
-      # 5. Configure Web App to Use Container
+      # 6. Configure Web App to Use Container
       - name: Deploy to Web App
         run: |
           az webapp config container set \
             --name tchamna-rag-ai-foundations-demo \
             --resource-group $AZURE_RG \
-            --docker-custom-image-name $IMAGE_NAME \
-            --docker-registry-server-url https://$LOGIN_SERVER
+            --container-image-name $IMAGE_NAME \
+            --container-registry-url https://$LOGIN_SERVER
 
           az webapp config appsettings set \
             --resource-group $AZURE_RG \
             --name tchamna-rag-ai-foundations-demo \
             --settings WEBSITES_PORT=8000
 
-      # 6. Restart Web App
+      # 7. Restart Web App
       - name: Restart Web App
         run: |
           az webapp restart \
