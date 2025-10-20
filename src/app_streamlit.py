@@ -9,6 +9,8 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import streamlit as st
+import logging
+import traceback
 from pathlib import Path
 import pandas as pd
 import pickle
@@ -63,6 +65,22 @@ def get_rag_pipeline_safe(use_chatgpt_flag: bool, use_reranker_flag: bool):
     except Exception as e:
         st.error(f"Failed to initialize retrieval pipeline: {e}")
         return None
+
+
+def _log_exception(e: Exception, ctx: str = ""):
+    """Log exception details to stderr and an on-disk runtime log so Azure's container logs capture it."""
+    msg = f"Exception in {ctx}: {e}\n" + traceback.format_exc()
+    try:
+        # Write to the system temp directory to avoid touching files in the
+        # app directory (which can trigger App Service file-change restarts).
+        import tempfile
+        runtime_log = Path(tempfile.gettempdir()) / "rag_runtime_errors.log"
+        with open(runtime_log, "a", encoding="utf-8") as f:
+            f.write(msg + "\n")
+    except Exception:
+        pass
+    # Also send to stderr (visible in container logs)
+    logging.error(msg)
 
 # -------------------------
 # Page Setup
@@ -180,8 +198,13 @@ with col1:
         st.session_state["chat_input"] = ""
 
         try:
-            # Use cached pipeline to avoid reloading models each submit
-            rag = get_rag_pipeline(use_chatgpt, runtime_use_reranker)
+            # Use safe pipeline factory which shows friendly warnings when deps
+            # or vectorstore are missing instead of raising uncaught exceptions
+            rag = get_rag_pipeline_safe(use_chatgpt, runtime_use_reranker)
+            if rag is None:
+                st.session_state["transcript"].append({"role": "assistant", "text": "Error: retrieval pipeline not available in this runtime. Check logs or enable the ML runtime."})
+                return
+
             with st.spinner("Running retrieval and generation..."):
                 ctxs = rag.retrieve(user_text, runtime_top_k)
                 result = rag.answer(user_text, ctxs)
@@ -192,8 +215,11 @@ with col1:
             st.session_state["transcript"].append({"role": "assistant", "text": assistant_text, "contexts": ctxs, "prompt": result.get("prompt")})
         except FileNotFoundError as e:
             st.session_state["transcript"].append({"role": "assistant", "text": f"Error: {e}. Build the vector store first."})
+            _log_exception(e, ctx="handle_submit - FileNotFoundError")
         except Exception as e:
-            st.session_state["transcript"].append({"role": "assistant", "text": f"Error during query: {e}"})
+            # Log exception details so Azure logs show why the UI disappeared
+            _log_exception(e, ctx="handle_submit")
+            st.session_state["transcript"].append({"role": "assistant", "text": f"Error during query: {e}. Check application logs for details."})
 
     # Chat message area (render transcript)
     chat_container = st.container()
@@ -320,19 +346,38 @@ with col1:
                 r[k] = _nfc(r.get(k, ""))
 
         df = pd.DataFrame(rows)
-        # Only provide an XLSX download which usually avoids encoding/locale issues
-        with io.BytesIO() as output:
-            with pd.ExcelWriter(output, engine="openpyxl") as writer:
-                df.to_excel(writer, index=False, sheet_name="transcript")
-            xlsx_data = output.getvalue()
+        # Try XLSX export (preferred). If the runtime lacks openpyxl or
+        # the stdlib 'xml' package (which openpyxl depends on), fall back
+        # to a safe CSV export so the app does not crash on import/runtime.
+        try:
+            with io.BytesIO() as output:
+                with pd.ExcelWriter(output, engine="openpyxl") as writer:
+                    df.to_excel(writer, index=False, sheet_name="transcript")
+                xlsx_data = output.getvalue()
 
-        st.download_button(
-            "📥 Download Transcript (XLSX)",
-            data=xlsx_data,
-            file_name="qa_transcript.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key="download-xlsx",
-        )
+            st.download_button(
+                "📥 Download Transcript (XLSX)",
+                data=xlsx_data,
+                file_name="qa_transcript.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="download-xlsx",
+            )
+        except (ModuleNotFoundError, ImportError) as e:
+            # Common in constrained runtimes where openpyxl or stdlib xml
+            # are missing. Log the full traceback and offer a CSV fallback.
+            _log_exception(e, ctx="transcript_export_xlsx_import")
+            csv_bytes = df.to_csv(index=False).encode("utf-8-sig")
+            st.warning("XLSX export unavailable in this runtime; providing CSV fallback.")
+            st.download_button(
+                "📥 Download Transcript (CSV)",
+                data=csv_bytes,
+                file_name="qa_transcript.csv",
+                mime="text/csv",
+                key="download-csv",
+            )
+        except Exception as e:
+            _log_exception(e, ctx="transcript_export")
+            st.error(f"Failed to prepare transcript export: {e}")
 
     # (duplicate transcript block removed)
 
@@ -347,23 +392,28 @@ current_query = last_user.strip() if last_user and last_user.strip() else "intro
 with col2:
     st.markdown("### Retrieved Chunks")
     try:
-        # Use cached pipeline and runtime_top_k
-        rag = get_rag_pipeline(use_chatgpt, runtime_use_reranker)
-        ctxs = rag.retrieve(current_query, runtime_top_k)
-        for i, c in enumerate(ctxs, 1):
-            with st.expander(
-                f"🔎 Chunk {i} — {c['meta']['source']} (score={c['score']:.3f})",
-                expanded=False
-            ):
-                parts = [p.strip() for p in c["text"].split("|")]
-                if len(parts) == 3:
-                    st.markdown(f"**English:** {parts[0]}")
-                    st.markdown(f"**Fè’éfě’è:** {parts[1]}")
-                    st.markdown(f"**French:** {parts[2]}")
-                else:
-                    st.text(c["text"])
-    except Exception:
-        st.caption("⚠️ Build the index to preview retrieved chunks.")
+        # Use the safe pipeline factory here so missing deps/vectorstore
+        # don't raise uncaught exceptions that would crash the app on Azure.
+        rag = get_rag_pipeline_safe(use_chatgpt, runtime_use_reranker)
+        if rag is None:
+            st.caption("⚠️ Retrieval pipeline unavailable in this runtime (check logs).")
+        else:
+            ctxs = rag.retrieve(current_query, runtime_top_k)
+            for i, c in enumerate(ctxs, 1):
+                with st.expander(
+                    f"🔎 Chunk {i} — {c['meta']['source']} (score={c['score']:.3f})",
+                    expanded=False
+                ):
+                    parts = [p.strip() for p in c["text"].split("|")]
+                    if len(parts) == 3:
+                        st.markdown(f"**English:** {parts[0]}")
+                        st.markdown(f"**Fè’éfě’è:** {parts[1]}")
+                        st.markdown(f"**French:** {parts[2]}")
+                    else:
+                        st.text(c["text"])
+    except Exception as e:
+        _log_exception(e, ctx="retrieval_preview")
+        st.caption("⚠️ Build the index to preview retrieved chunks (check logs for errors).")
 
 # -------------------------
 # Vector DB Browser (moved into main layout on the right column)
@@ -397,4 +447,8 @@ with col2:
             except Exception as e:
                 st.error(f"Build failed: {e}")
     except Exception as e:
+        _log_exception(e, ctx="vector_db_browser")
         st.error(f"Could not load docs.pkl: {e}")
+
+
+    # (no top-level except here; inner try/except blocks handle page sections)
