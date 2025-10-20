@@ -90,6 +90,47 @@ st.title("🏦 Banking Assistant — RAG Demo")
 st.caption("Demo with FAISS + SentenceTransformers + FLAN-T5 or ChatGPT | Upload docs and ask questions.")
 
 # -------------------------
+# Runtime health banner
+# -------------------------
+def _check_runtime_health():
+    """Return a tuple (vectorstore_ok: bool, sentence_transformers_available: bool).
+    This is intentionally lightweight: it checks for the presence of the
+    precomputed FAISS files and attempts a minimal import of
+    sentence_transformers without loading models.
+    """
+    vs_ok = False
+    try:
+        vs_path = Path(VECTORSTORE_DIR)
+        vs_ok = (vs_path / "faiss.index").exists() and (vs_path / "docs.pkl").exists()
+    except Exception:
+        vs_ok = False
+
+    st_ok = False
+    try:
+        # Import the package only to detect presence, do not instantiate models.
+        import sentence_transformers  # type: ignore
+        st_ok = True
+    except Exception:
+        st_ok = False
+
+    return vs_ok, st_ok
+
+
+_vs_ok, _st_ok = _check_runtime_health()
+with st.container():
+    col_a, col_b = st.columns([3, 1])
+    with col_a:
+        if _vs_ok:
+            st.success("Vectorstore: precomputed index found (faiss.index + docs.pkl)")
+        else:
+            st.error("Vectorstore: NOT found. Run `python src/precompute_embeddings.py` and commit `vectorstore/` or rebuild index via sidebar.")
+    with col_b:
+        if _st_ok:
+            st.success("sentence-transformers: installed")
+        else:
+            st.info("sentence-transformers: NOT installed — lexical fallback / prebuilt vectors will be used")
+
+# -------------------------
 # Session State
 # -------------------------
 if "transcript" not in st.session_state:
