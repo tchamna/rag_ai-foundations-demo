@@ -8,11 +8,16 @@ import numpy as np
 import pandas as pd 
 
 import unicodedata
-
-from sentence_transformers import SentenceTransformer, CrossEncoder
 import faiss
 
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+# transformers and sentence-transformers are heavy; import lazily when needed
+try:
+    # keep typing names available for static analysis only; real imports happen in Generator
+    from transformers import AutoTokenizer, AutoModelForSeq2SeqLM  # type: ignore
+except Exception:
+    AutoTokenizer = None  # type: ignore
+    AutoModelForSeq2SeqLM = None  # type: ignore
+
 from openai import OpenAI
 
 
@@ -226,6 +231,17 @@ class VectorIndex:
             except Exception:
                 device = "cpu"
 
+            # Import SentenceTransformer lazily so environments that don't
+            # have sentence-transformers installed (runtime-minimal) can still
+            # start and perform FAISS-only queries when using precomputed index.
+            try:
+                from sentence_transformers import SentenceTransformer
+            except Exception as e:
+                raise RuntimeError(
+                    "The 'sentence_transformers' package is required to compute embeddings. "
+                    "Install 'sentence-transformers' or run this code against a precomputed FAISS index (no embedding step)."
+                ) from e
+
             try:
                 # Pass device explicitly; if this fails, try a CPU-only load.
                 self.embedder = SentenceTransformer(self.embedding_model, device=device)
@@ -234,8 +250,6 @@ class VectorIndex:
                 try:
                     self.embedder = SentenceTransformer(self.embedding_model, device="cpu")
                 except Exception as e2:
-                    # If even CPU load fails, raise a clear error so caller can
-                    # handle it (the app can catch this and present a message).
                     raise RuntimeError(f"Could not load embedding model '{self.embedding_model}': {e2}") from e2
 
         return self.embedder.encode(texts, show_progress_bar=False, normalize_embeddings=True)
@@ -286,11 +300,18 @@ class ReRanker:
         except Exception:
             device = "cpu"
 
+        # Import CrossEncoder lazily to avoid requiring sentence-transformers in
+        # minimal runtime images that only need to search a prebuilt FAISS index.
         try:
-            self.model = CrossEncoder(model_name, device=device)
-        except Exception as e:
-            # Avoid crashing the whole app if the reranker can't be loaded in this environment.
-            print(f"Warning: failed to load CrossEncoder reranker on device={device}: {e}")
+            from sentence_transformers import CrossEncoder
+            try:
+                self.model = CrossEncoder(model_name, device=device)
+            except Exception as e:
+                print(f"Warning: failed to load CrossEncoder reranker on device={device}: {e}")
+                self.model = None
+        except Exception:
+            # sentence-transformers/CrossEncoder not installed in this environment.
+            print("Warning: sentence-transformers not installed; reranker disabled.")
             self.model = None
 
     def rerank(self, query: str, contexts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -306,19 +327,21 @@ class ReRanker:
         for c, s in zip(contexts, scores):
             c["rerank_score"] = float(s)
 
-        return sorted(contexts, key=lambda x: x["rerank_score"], reverse=True)
+        return sorted(contexts, key=lambda x: x.get("rerank_score", 0.0), reverse=True)
 
 # ----------------- Generator -----------------
 
 class Generator:
     def __init__(self, model_name: str = GENERATION_MODEL, use_chatgpt: bool = False):
         self.use_chatgpt = use_chatgpt
+        # Delay heavy transformer loads until generation is actually needed.
+        self.client = None
+        self.model = None
+        self.tokenizer = None
+        self.model_name = model_name
         if use_chatgpt:
             self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
             self.model = "gpt-4o-mini"
-        else:
-            self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-            self.model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
 
     def generate(self, prompt: str, max_new_tokens: int = 256) -> str:
         if self.use_chatgpt:
@@ -328,6 +351,15 @@ class Generator:
             )
             return resp.choices[0].message.content.strip()
         else:
+            # Lazy-load transformers tokenizer/model if they weren't loaded at init
+            if self.tokenizer is None or self.model is None:
+                try:
+                    from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+                except Exception as e:
+                    raise RuntimeError("transformers is required for local generation") from e
+                self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+                self.model = AutoModelForSeq2SeqLM.from_pretrained(self.model_name)
+
             inputs = self.tokenizer(prompt, return_tensors="pt", truncation=True)
             outputs = self.model.generate(**inputs, max_new_tokens=max_new_tokens)
             return self.tokenizer.decode(outputs[0], skip_special_tokens=True)
@@ -381,17 +413,29 @@ class RAGPipeline:
         self.index = VectorIndex()
         self.use_chatgpt = use_chatgpt
         self.refine_phrasebook_with_gpt = refine_phrasebook_with_gpt
-        self.generator = Generator(model_name=GENERATION_MODEL, use_chatgpt=use_chatgpt)
-
+        # Defer instantiation of heavy components until needed
+        self.generator = None
         self.use_reranker = use_reranker
-        if use_reranker:
-            self.reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+        self.reranker = None
+        # Only create the simple objects here; heavy models load lazily
 
 
     def ensure_loaded(self):
         if not (self.vs_dir / "faiss.index").exists():
             raise FileNotFoundError("Vector store not found. Run ingest.py first.")
         self.index.load(self.vs_dir)
+
+    def get_generator(self):
+        if self.generator is None:
+            self.generator = Generator(model_name=GENERATION_MODEL, use_chatgpt=self.use_chatgpt)
+        return self.generator
+
+    def get_reranker(self):
+        if not self.use_reranker:
+            return None
+        if self.reranker is None:
+            self.reranker = ReRanker()
+        return self.reranker
 
     
 
@@ -454,12 +498,9 @@ class RAGPipeline:
             ctxs.append(docs[i] | {"score": score})
 
         # --------- Rerank (if enabled) ----------
-        if getattr(self, "use_reranker", False) and ctxs:
-            pairs = [(query, c["text"]) for c in ctxs]
-            scores = self.reranker.predict(pairs)
-            for j, s in enumerate(scores):
-                ctxs[j]["rerank_score"] = float(s)
-            ctxs.sort(key=lambda x: x.get("rerank_score", 0.0), reverse=True)
+        reranker = self.get_reranker()
+        if reranker and ctxs:
+            ctxs = reranker.rerank(query, ctxs)
 
         return ctxs[:k]
 

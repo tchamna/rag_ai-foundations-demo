@@ -1,3 +1,13 @@
+import sys
+from pathlib import Path
+import os
+
+# Ensure repository root is on sys.path so imports like `from src.rag_pipeline` work
+# whether streamlit is launched from the repo root or from inside `src/`.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 import streamlit as st
 from pathlib import Path
 import pandas as pd
@@ -34,6 +44,25 @@ def get_rag_pipeline(use_chatgpt_flag: bool, use_reranker_flag: bool):
     )
     rp.ensure_loaded()
     return rp
+
+
+def get_rag_pipeline_safe(use_chatgpt_flag: bool, use_reranker_flag: bool):
+    """Create the RAG pipeline but catch missing heavy deps and vectorstore errors.
+    Returns None on failure and shows a friendly Streamlit warning where appropriate.
+    """
+    try:
+        return get_rag_pipeline(use_chatgpt_flag, use_reranker_flag)
+    except FileNotFoundError as e:
+        st.warning("Vector store not found. Build the index (sidebar) or run the ingest script before querying.")
+        return None
+    except RuntimeError as e:
+        # This commonly happens when sentence-transformers/transformers is missing
+        st.warning("A required ML package is not installed in this runtime (sentence-transformers/transformers).\n"
+                   "Use the minimal runtime image or enable the ML runtime that includes these packages.")
+        return None
+    except Exception as e:
+        st.error(f"Failed to initialize retrieval pipeline: {e}")
+        return None
 
 # -------------------------
 # Page Setup
@@ -179,7 +208,7 @@ with col1:
     # Input box that submits on Enter via on_change
     st.text_input("", key="chat_input", placeholder="Type a message and press Enter", on_change=handle_submit)
 
-    # -------------------------
+    # ----------------------ε
     # Transcript Download
     # -------------------------
     if st.session_state.get("transcript"):
