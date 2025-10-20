@@ -18,7 +18,6 @@ except Exception:
     AutoTokenizer = None  # type: ignore
     AutoModelForSeq2SeqLM = None  # type: ignore
 
-from openai import OpenAI
 
 
 from src.config import (
@@ -340,8 +339,18 @@ class Generator:
         self.tokenizer = None
         self.model_name = model_name
         if use_chatgpt:
-            self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-            self.model = "gpt-4o-mini"
+            try:
+                # Import OpenAI lazily so environments that don't include the
+                # `openai` package (runtime-minimal) can still import the module.
+                from openai import OpenAI
+                self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+                self.model = "gpt-4o-mini"
+            except Exception:
+                # Don't fail import time; disable chatgpt mode and leave
+                # generator available for local (transformers) generation.
+                print("Warning: 'openai' package not installed; ChatGPT mode disabled.")
+                self.client = None
+                self.use_chatgpt = False
 
     def generate(self, prompt: str, max_new_tokens: int = 256) -> str:
         if self.use_chatgpt:
@@ -626,7 +635,13 @@ class RAGPipeline:
         # GPT branch (if enabled)
         # ------------------------------
         if self.use_chatgpt:
-            client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+            try:
+                from openai import OpenAI
+                client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+            except Exception as e:
+                raise RuntimeError(
+                    "OpenAI package required for ChatGPT mode. Install the 'openai' package or disable ChatGPT usage."
+                ) from e
             # When using ChatGPT, explicitly ask for an elaborated answer that
             # re-uses full sentences from the provided contexts. Request clear
             # citations like [1], [2] and a short summary sentence at the top.
