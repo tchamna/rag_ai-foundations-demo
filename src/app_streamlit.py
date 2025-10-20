@@ -205,21 +205,47 @@ with col1:
                 st.session_state["transcript"].append({"role": "assistant", "text": "Error: retrieval pipeline not available in this runtime. Check logs or enable the ML runtime."})
                 return
 
-            with st.spinner("Running retrieval and generation..."):
-                ctxs = rag.retrieve(user_text, runtime_top_k)
-                result = rag.answer(user_text, ctxs)
+            # Do retrieval and generation in guarded blocks so any exception
+            # (including unusual BaseException subclasses) is logged and
+            # converted into a friendly message rather than letting Streamlit
+            # crash or the process die silently in production.
+            with st.spinner("Running retrieval..."):
+                try:
+                    ctxs = rag.retrieve(user_text, runtime_top_k)
+                except FileNotFoundError as e:
+                    st.session_state["transcript"].append({"role": "assistant", "text": f"Error: {e}. Build the vector store first."})
+                    _log_exception(e, ctx="handle_submit - retrieve - FileNotFoundError")
+                    return
+                except Exception as e:
+                    _log_exception(e, ctx="handle_submit - retrieve")
+                    st.session_state["transcript"].append({"role": "assistant", "text": f"Retrieval failed: {e}. Check logs."})
+                    return
+
+            with st.spinner("Generating answer..."):
+                try:
+                    result = rag.answer(user_text, ctxs)
+                except Exception as e:
+                    # Generators may raise unexpected errors (OOM, missing libs);
+                    # capture everything and log to help diagnose on Azure.
+                    _log_exception(e, ctx="handle_submit - generate")
+                    st.session_state["transcript"].append({"role": "assistant", "text": f"Generation failed: {e}. Check logs."})
+                    return
 
             assistant_text = result.get("answer", "(no answer)")
 
             # Append assistant reply
             st.session_state["transcript"].append({"role": "assistant", "text": assistant_text, "contexts": ctxs, "prompt": result.get("prompt")})
-        except FileNotFoundError as e:
-            st.session_state["transcript"].append({"role": "assistant", "text": f"Error: {e}. Build the vector store first."})
-            _log_exception(e, ctx="handle_submit - FileNotFoundError")
-        except Exception as e:
-            # Log exception details so Azure logs show why the UI disappeared
-            _log_exception(e, ctx="handle_submit")
-            st.session_state["transcript"].append({"role": "assistant", "text": f"Error during query: {e}. Check application logs for details."})
+        except BaseException as e:
+            # Catch BaseException to try to surface even unusual errors (e.g., SystemError)
+            # Log as much detail as possible to the runtime temp log so we can inspect
+            # it from Azure Kudu if the process doesn't produce standard logs.
+            _log_exception(e, ctx="handle_submit - base")
+            try:
+                st.session_state["transcript"].append({"role": "assistant", "text": f"Unexpected error during query: {e}. Check runtime logs."})
+            except Exception:
+                # If Streamlit is in a bad state, re-raise after logging so at least
+                # the trace is persisted to disk for remote diagnosis.
+                raise
 
     # Chat message area (render transcript)
     chat_container = st.container()
@@ -232,7 +258,9 @@ with col1:
                 st.markdown(f"**{Assistant_name}:** {msg.get('text')}" )
 
     # Input box that submits on Enter via on_change
-    st.text_input("", key="chat_input", placeholder="Type a message and press Enter", on_change=handle_submit)
+    # Provide a collapsed (hidden) label to avoid Streamlit's empty-label
+    # accessibility warning which may become an exception in future versions.
+    st.text_input("Chat input", key="chat_input", placeholder="Type a message and press Enter", on_change=handle_submit, label_visibility="collapsed")
 
     # ----------------------ε
     # Transcript Download
@@ -398,21 +426,31 @@ with col2:
         if rag is None:
             st.caption("⚠️ Retrieval pipeline unavailable in this runtime (check logs).")
         else:
-            ctxs = rag.retrieve(current_query, runtime_top_k)
+            try:
+                ctxs = rag.retrieve(current_query, runtime_top_k)
+            except Exception as e:
+                _log_exception(e, ctx="retrieval_preview - retrieve")
+                st.caption("⚠️ Retrieval failed (check logs).")
+                ctxs = []
+
             for i, c in enumerate(ctxs, 1):
-                with st.expander(
-                    f"🔎 Chunk {i} — {c['meta']['source']} (score={c['score']:.3f})",
-                    expanded=False
-                ):
-                    parts = [p.strip() for p in c["text"].split("|")]
-                    if len(parts) == 3:
-                        st.markdown(f"**English:** {parts[0]}")
-                        st.markdown(f"**Fè’éfě’è:** {parts[1]}")
-                        st.markdown(f"**French:** {parts[2]}")
-                    else:
-                        st.text(c["text"])
+                try:
+                    with st.expander(
+                        f"🔎 Chunk {i} — {c['meta']['source']} (score={c['score']:.3f})",
+                        expanded=False
+                    ):
+                        parts = [p.strip() for p in c["text"].split("|")]
+                        if len(parts) == 3:
+                            st.markdown(f"**English:** {parts[0]}")
+                            st.markdown(f"**Fè’éfě’è:** {parts[1]}")
+                            st.markdown(f"**French:** {parts[2]}")
+                        else:
+                            st.text(c["text"])
+                except Exception as e:
+                    _log_exception(e, ctx=f"retrieval_preview - render chunk {i}")
+                    st.text("(failed to render chunk; check logs)")
     except Exception as e:
-        _log_exception(e, ctx="retrieval_preview")
+        _log_exception(e, ctx="retrieval_preview - outer")
         st.caption("⚠️ Build the index to preview retrieved chunks (check logs for errors).")
 
 # -------------------------
