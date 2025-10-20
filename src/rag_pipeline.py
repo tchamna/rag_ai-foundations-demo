@@ -261,14 +261,67 @@ class VectorIndex:
         self.index.add(vectors)
 
     def search(self, query: str, top_k: int = TOP_K) -> List[Tuple[int, float]]:
-        q = self._embed([query]).astype("float32")
-        scores, idxs = self.index.search(q, top_k)
-        results = []
-        for score, idx in zip(scores[0], idxs[0]):
-            if idx == -1:
-                continue
-            results.append((int(idx), float(score)))
-        return results
+        # If no FAISS index is loaded, perform lexical fallback so the
+        # application can still search preloaded docs without heavy ML deps.
+        if self.index is None:
+            # Lexical-overlap fallback (no embedding required)
+            def normalize(s: str) -> str:
+                return "".join(c for c in unicodedata.normalize("NFKD", s.lower()) if not unicodedata.combining(c))
+
+            q_norm = normalize(query)
+            q_tokens = set(q_norm.split())
+            scored = []
+            for idx, d in enumerate(self.docs):
+                d_norm = normalize(d.get("text", ""))
+                d_tokens = set(d_norm.split())
+                if not q_tokens or not d_tokens:
+                    continue
+                overlap = len(q_tokens & d_tokens)
+                score = float(overlap) / max(1, len(q_tokens))
+                if score > 0:
+                    scored.append((idx, score))
+
+            scored.sort(key=lambda x: x[1], reverse=True)
+            return scored[:top_k]
+
+        # Try semantic search using the embedder. If embeddings cannot be
+        # computed because sentence-transformers (or torch) are missing in
+        # this runtime, fall back to a lightweight lexical-overlap search so
+        # the app can still respond using precomputed vectorstore/docs.
+        try:
+            q = self._embed([query]).astype("float32")
+            scores, idxs = self.index.search(q, top_k)
+            results = []
+            for score, idx in zip(scores[0], idxs[0]):
+                if idx == -1:
+                    continue
+                results.append((int(idx), float(score)))
+            return results
+        except RuntimeError:
+            # Embedding model unavailable in this environment. Use a simple
+            # lexical-overlap scoring as a fallback. This is cheaper and
+            # doesn't require heavy ML packages but obviously isn't a
+            # semantic search substitute.
+            def normalize(s: str) -> str:
+                return "".join(c for c in unicodedata.normalize("NFKD", s.lower()) if not unicodedata.combining(c))
+
+            q_norm = normalize(query)
+            q_tokens = set(q_norm.split())
+            scored = []
+            for idx, d in enumerate(self.docs):
+                d_norm = normalize(d.get("text", ""))
+                d_tokens = set(d_norm.split())
+                if not q_tokens or not d_tokens:
+                    continue
+                overlap = len(q_tokens & d_tokens)
+                # score = overlap fraction of query tokens present in the doc
+                score = float(overlap) / max(1, len(q_tokens))
+                if score > 0:
+                    scored.append((idx, score))
+
+            # Sort by score desc and return top_k
+            scored.sort(key=lambda x: x[1], reverse=True)
+            return scored[:top_k]
 
     def save(self, vs_dir: Path):
         vs_dir.mkdir(parents=True, exist_ok=True)
