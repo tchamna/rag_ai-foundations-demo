@@ -8,7 +8,7 @@ if __name__ == '__main__':
     # 🔹 Welcome Banner
     st.markdown(
         """
-        ### Pen sɑ́' pəpē': Bienvenu, Welcome 👋  
+        ### Pen sɑ́' pəpē': Bienvenu, Welcome 
     
         This app was developed by **Shck Tchamna** to demonstrate how 
         **Retrieval-Augmented Generation (RAG)** can be used to make the most 
@@ -17,10 +17,6 @@ if __name__ == '__main__':
     )
     
     st.divider()  # a horizontal line before the main UI
-    
-    # 🔹 Main Interface (your app continues here)
-    st.title("RAG App Interface")
-
 
     sys.exit(0)
 
