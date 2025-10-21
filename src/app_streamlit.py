@@ -279,7 +279,13 @@ with col1:
         try:
             # Use safe pipeline factory which shows friendly warnings when deps
             # or vectorstore are missing instead of raising uncaught exceptions
-            rag = get_rag_pipeline_safe(use_chatgpt, runtime_use_reranker)
+            # Allow a per-submit override so the 'Ask with ChatGPT' button
+            # can request ChatGPT for a single query without changing the
+            # sidebar setting permanently.
+            override = st.session_state.pop("chat_use_chatgpt_override", None)
+            local_use_chatgpt = use_chatgpt if override is None else bool(override)
+
+            rag = get_rag_pipeline_safe(local_use_chatgpt, runtime_use_reranker)
             if rag is None:
                 st.session_state["transcript"].append({"role": "assistant", "text": "Error: retrieval pipeline not available in this runtime. Check logs or enable the ML runtime."})
                 return
@@ -368,7 +374,25 @@ with col1:
     # Input box that submits on Enter via on_change
     # Provide a collapsed (hidden) label to avoid Streamlit's empty-label
     # accessibility warning which may become an exception in future versions.
-    st.text_input("Chat input", key="chat_input", placeholder="Type a message and press Enter", on_change=handle_submit, label_visibility="collapsed")
+    # Single-line input with inline buttons in the same row to mimic ChatGPT
+    input_col, btn_col = st.columns([8, 2])
+    with input_col:
+        st.text_input("Chat input", key="chat_input", placeholder="Type a message and press Enter", on_change=handle_submit, label_visibility="collapsed")
+
+    # Helper to submit with optional ChatGPT override
+    def submit_with_flag(flag=None):
+        if flag is None:
+            st.session_state.pop("chat_use_chatgpt_override", None)
+        else:
+            st.session_state["chat_use_chatgpt_override"] = flag
+        handle_submit()
+
+    with btn_col:
+        # Place Send and ChatGPT buttons inline next to the input field
+        if st.button("➤"):
+            submit_with_flag(None)
+        if st.button("🤖"):
+            submit_with_flag(True)
 
     # ----------------------ε
     # Transcript Download
