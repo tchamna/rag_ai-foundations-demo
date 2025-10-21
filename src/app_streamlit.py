@@ -85,7 +85,8 @@ def _log_exception(e: Exception, ctx: str = ""):
 # -------------------------
 # Page Setup
 # -------------------------
-st.set_page_config(page_title="Banking Assistant (RAG Demo)", layout="wide")
+# Page config is handled in app.py to ensure set_page_config() is the
+# first Streamlit call in the process. Here we only set the title/caption.
 st.title("🏦 Banking Assistant — RAG Demo")
 st.caption("Demo with FAISS + SentenceTransformers + FLAN-T5 or ChatGPT | Upload docs and ask questions.")
 

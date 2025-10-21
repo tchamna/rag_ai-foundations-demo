@@ -1,22 +1,14 @@
-import os
+"""app.py
+
+Minimal entrypoint for Streamlit that calls page config first and then
+imports the real app module. set_page_config must be the first Streamlit
+call in the process.
+"""
+
 import streamlit as st
 
-# Configure page
+# Page config must be called before any other Streamlit calls or imports
+# that themselves invoke Streamlit APIs.
 st.set_page_config(page_title="RAG Demo", layout="wide")
 
-# 🔹 Welcome Banner
-st.markdown(
-    """
-    ### Pen sɑ́' pəpē': Bienvenu, Welcome
-    
-    This app was developed by **Shck Tchamna** to demonstrate how 
-    **Retrieval-Augmented Generation (RAG)** can be used to make the most 
-    of your data — by querying it **without leaking your data via the internet**.  
-    """
-)
-
-st.divider()  # a horizontal line before the main UI
-
-# 🔹 Import your full dashboard
-# Instead of running it separately, just import the file so its Streamlit code executes
-from src import app_streamlit
+from src import app_streamlit  # pragma: no cover
