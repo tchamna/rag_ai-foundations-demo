@@ -237,7 +237,12 @@ runtime_use_reranker = st.sidebar.checkbox("Use reranker (may be slower)", value
 # Sidebar — Choose Generator
 # -------------------------
 st.sidebar.header("Answer Generator")
-use_chatgpt = st.sidebar.checkbox("Use ChatGPT API instead of FLAN-T5", value=False)
+use_chatgpt = st.sidebar.checkbox(
+    "Use ChatGPT API instead of FLAN-T5 (disabled)",
+    value=False,
+    disabled=True,
+    help="ChatGPT is disabled in this runtime to avoid external API calls. Enable manually in code if needed.",
+)
 
 # -------------------------
 # Post-processor for citations
@@ -269,6 +274,18 @@ with col1:
         user_text = st.session_state.get("chat_input", "").strip()
         if not user_text:
             return
+
+        # Defensive dedupe: if the last user message is identical to the
+        # current input, do not append again. This avoids double-posting when
+        # both the input's on_change and a button call this handler during
+        # the same rerun.
+        last_msgs = st.session_state.get("transcript", [])
+        if last_msgs:
+            last = last_msgs[-1]
+            if last.get("role") == "user" and (last.get("text", "") or "") == user_text:
+                # Clear the input and exit early
+                st.session_state["chat_input"] = ""
+                return
 
         # Append user message immediately (chat UI)
         st.session_state["transcript"].append({"role": "user", "text": user_text})
@@ -389,9 +406,10 @@ with col1:
 
     with btn_col:
         # Place Send and ChatGPT buttons inline next to the input field
-        if st.button("➤"):
+        # Disabled by default — enable when you want interactive sending
+        if st.button("➤", disabled=True):
             submit_with_flag(None)
-        if st.button("🤖"):
+        if st.button("🤖", disabled=True):
             submit_with_flag(True)
 
     # ----------------------ε
