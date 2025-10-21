@@ -501,7 +501,7 @@ class RAGPipeline:
 
     
 
-    def retrieve(self, query: str, k: int = TOP_K) -> List[Dict[str, Any]]:
+    def retrieve(self, query: str, k: int = TOP_K, ranking_strategy: str = "auto", rerank_weight: float = 0.3) -> List[Dict[str, Any]]:
         """
         Hybrid retrieval: combines FAISS semantic search with lexical matching.
         Ensures numeric/date queries (like '06', '07/05', 'June') return exact matches.
@@ -548,21 +548,88 @@ class RAGPipeline:
             if i in lexical_idxs:
                 score = 1.0 + base_sem_score  # lexical + any semantic relevance
             else:
-                    # For semantic-only hits, scale FAISS cosine/dot scores into [0,1].
-                    # When embeddings are normalized, FAISS returns cosine (in [-1,1]).
-                    # Map that to [0,1] with a linear transform so UI thresholds work
-                    # sensibly: score = 0.5 + 0.5 * base_sem_score.
-                    raw = float(base_sem_score)
-                    scaled = 0.5 + 0.5 * raw
-                    # clamp to [0,1]
-                    score = max(0.0, min(1.0, scaled))
+                # For semantic-only hits, scale FAISS cosine/dot scores into [0,1].
+                # When embeddings are normalized, FAISS returns cosine (in [-1,1]).
+                # Map that to [0,1] with a linear transform so UI thresholds work
+                # sensibly: score = 0.5 + 0.5 * base_sem_score.
+                raw = float(base_sem_score)
+                scaled = 0.5 + 0.5 * raw
+                # clamp to [0,1]
+                score = max(0.0, min(1.0, scaled))
 
             ctxs.append(docs[i] | {"score": score})
+
+        # Ensure contexts are ordered by descending score by default so the
+        # highest-scoring chunk is shown first in the UI. If a reranker is
+        # enabled it will re-order these contexts as needed.
+        try:
+            ctxs.sort(key=lambda c: c.get("score", 0.0), reverse=True)
+        except Exception:
+            pass
 
         # --------- Rerank (if enabled) ----------
         reranker = self.get_reranker()
         if reranker and ctxs:
             ctxs = reranker.rerank(query, ctxs)
+
+        # Decide how to compute the final metric used for sorting. We support
+        # three strategies:
+        # - "semantic": use semantic/lexical `score` only
+        # - "rerank": use `rerank_score` when available, otherwise fall back to `score`
+        # - "weighted": combine normalized rerank_score and semantic `score` using `rerank_weight` (0..1)
+        # - "auto": prefer rerank if the reranker is enabled, otherwise semantic
+        try:
+            # Prepare reranker outputs if any exist in ctxs
+            has_rerank = any(c.get("rerank_score") is not None for c in ctxs)
+            strategy = ranking_strategy or "auto"
+            if strategy == "auto":
+                strategy = "rerank" if has_rerank else "semantic"
+
+            if strategy == "semantic":
+                for c in ctxs:
+                    c["final_score"] = float(c.get("score", 0.0))
+
+            elif strategy == "rerank":
+                for c in ctxs:
+                    if c.get("rerank_score") is not None:
+                        c["final_score"] = float(c.get("rerank_score"))
+                    else:
+                        c["final_score"] = float(c.get("score", 0.0))
+
+            elif strategy == "weighted":
+                # Normalize rerank_score across the returned contexts to [0,1]
+                rerank_vals = [float(c.get("rerank_score")) for c in ctxs if c.get("rerank_score") is not None]
+                if rerank_vals and len(rerank_vals) > 1:
+                    rmin, rmax = min(rerank_vals), max(rerank_vals)
+                elif rerank_vals:
+                    rmin = rmax = rerank_vals[0]
+                else:
+                    rmin = rmax = None
+
+                for c in ctxs:
+                    s = float(c.get("score", 0.0))
+                    r = c.get("rerank_score")
+                    if r is None or rmin is None or rmax is None or rmax == rmin:
+                        norm_r = 0.5 if r is not None else 0.0
+                    else:
+                        norm_r = (float(r) - rmin) / (rmax - rmin)
+
+                    alpha = float(rerank_weight if rerank_weight is not None else 0.3)
+                    # final score is a weighted sum of normalized rerank and semantic score
+                    c["final_score"] = alpha * norm_r + (1.0 - alpha) * s
+
+            else:
+                # Unknown strategy: default to semantic
+                for c in ctxs:
+                    c["final_score"] = float(c.get("score", 0.0))
+
+            ctxs.sort(key=lambda c: c.get("final_score", 0.0), reverse=True)
+        except Exception:
+            # If anything goes wrong, fall back to previous score-based sort
+            try:
+                ctxs.sort(key=lambda c: c.get("score", 0.0), reverse=True)
+            except Exception:
+                pass
 
         return ctxs[:k]
 

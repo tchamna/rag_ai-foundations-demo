@@ -4,164 +4,78 @@ This repository is a small Retrieval-Augmented Generation (RAG) demo that combin
 
 - A Streamlit dashboard (`src/app_streamlit.py`) for interactive Q&A and transcript downloads (XLSX).
 - A FastAPI backend and React frontend (in `frontend/`) for a separate web chat UI.
-- Scripts for ingesting documents and precomputing embeddings.
-- A FAISS vectorstore saved under `vectorstore/`.
+# RAG AI Foundations Demo
 
-This README covers quick local usage and notes about the UI and theme.
+This repository is a compact Retrieval-Augmented Generation (RAG) demo built around FAISS vector search and a Streamlit UI. The app prefers using a precomputed FAISS index (in `vectorstore/`) so it can run in lightweight runtimes without heavy ML dependencies. When embeddings or generators are required at runtime the code will attempt to lazy-load them — but production deployments should precompute and commit the vector store instead of installing large ML packages.
 
-## Quickstart — Streamlit (local)
+Contents
+- Streamlit dashboard: `src/app_streamlit.py` (interactive Q&A, transcript export)
+- RAG pipeline & ingestion: `src/rag_pipeline.py`, `src/ingest.py`, `src/precompute_embeddings.py`
+- Frontend: `frontend/` (separate React UI)
+- Precomputed vector store: `vectorstore/` (FAISS index + metadata)
 
-1. Create a virtual environment and install requirements (recommended):
+This README contains a short quickstart. Full usage, deployment and architecture notes are in the `docs/` folder.
+
+Quick local setup
+1. Create and activate a virtual environment:
 
 ```powershell
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+.venv\Scripts\Activate.ps1
 ```
 
-2. Run the Streamlit dashboard:
+2. Install runtime requirements (this project keeps ML-heavy packages out of `requirements.txt` by default; add them only if you need on-demand embedding/generation):
 
-```powershell
-streamlit run src/app_streamlit.py
-```
-
-3. In the Streamlit UI:
-- Use the **Upload Document** sidebar to add `.txt`, `.csv` or `.xlsx` files.
-- Click **Rebuild Vector Store** in the sidebar (or use the `Build vector store now` button in the right column) to index documents.
-- Ask questions in the main panel. Retrieved chunks and the Vector DB Browser appear in the right column.
-- Download the Q&A transcript using the **Download Transcript (XLSX)** button (XLSX only — CSV removed for better Excel compatibility).
-
-Notes:
-- The app uses a centralized theme provider in `src/theme.py`. Dark-mode is enabled by default; you can change the default in `src/app_streamlit.py` by modifying the `st.session_state['dark_mode']` initialization.
-
-## Quickstart — Docker (backend + frontend)
-
-The repo includes Dockerfiles and a `docker-compose.yml` to run the backend (FastAPI) and the React frontend together.
-
-From the project root, build and run with Docker Compose:
-
-```powershell
-docker-compose up --build
-```
-
-After startup:
-- Backend (FastAPI / Uvicorn) typically listens on port `8000` inside the compose network.
-- Frontend (Vite preview) is served at port `5173`.
-
-If you run the frontend locally (not via Docker) make sure API calls target the backend service URL (e.g. `http://localhost:8000` when running backend locally).
-
-## Rebuild Vector Store (programmatic)
-
-The vector store build logic lives in `src/app_streamlit.py` (function `rebuild_index()`), and uses the ingestion helper functions from `rag_pipeline.py`. Building will create files under the configured `VECTORSTORE_DIR` (see `src/config.py`).
-
-If you want to precompute embeddings separately, check `src/precompute_embeddings.py` and `src/ingest.py`.
-
-## Theme / Styling
-
-- Theme CSS is centralized in `src/theme.py` as `get_theme_css(dark_mode: bool)`. The Streamlit app imports this and applies it at startup.
-- Dark mode is the default. Toggle it in the sidebar to switch back to light mode.
-
-## Notes & Caveats
-
-- The Streamlit app may lazy-load models (FLAN-T5/transformers) when used; expect extra memory and time on the first query.
-- Large dependencies such as `torch` and ML models can take time to install and initialize.
-- The transcript download is XLSX only to avoid cross-platform encoding issues with CSV/Excel.
-
-## Development
-
-- Code is organized under `src/` for the Python backends and `frontend/` for the React UI.
-- To run tests or linters, add your preferred tooling and CI configs.
-
----
-If you'd like, I can:
-- Commit and push this README to the repository for you, or
-- Add a short `Makefile` / `tasks.json` to streamline common commands (run, build, rebuild vector store).
-# Banking Assistant — RAG Demo (Portfolio)
-
-This project is a compact, demonstrable Retrieval-Augmented Generation (RAG) system I built to showcase practical skills with NLP, embeddings, vector search, and LLM-driven answer synthesis. It's designed to be friendly: clear architecture, polished UX (Streamlit), and easy to run locally or deploy to the Cloud.
-
-Why this project is portfolio-worthy
-- Real-world scenario: customer-facing Q&A over banking FAQs, product disclosures, and uploaded bank statements.
-- Full RAG stack: document ingestion, chunking, SentenceTransformer embeddings, FAISS vector search, and LLM-based answer generation with grounding citations.
-- Reproducible: runnable locally and tuned for Streamlit Cloud deployment.
-- Thoughtful UX: transcript download, retrieval browser, configurable similarity threshold, and optional ChatGPT polishing.
-
-![App interface](assets/image.png)
-
-Live demo (local or cloud)
-- Run locally with CPU-only models or deploy to Streamlit Cloud for quick sharing with anyone, as a prototype.
-- Hosted demo (Streamlit Cloud): https://tchamna-rag-ai-foundation-model.streamlit.app/
-
-Key features
-- Ingest text/csv/xlsx and automatically chunk documents for retrieval.
-- FAISS vector store backed by SentenceTransformers embeddings (`all-MiniLM-L6-v2` by default).
-- Local generation with `google/flan-t5-base` (no external API keys required) and optional ChatGPT polishing.
-- Phrasebook-aware shortcuts: direct answers for Q/A and bilingual phrasebook entries (Fe'efe'e / English / French).
-- Streamlit UI with controls for similarity threshold, reranker, and transcript download.
-
-Custom documents & any domain
-- You can customize the app to search over your own documents anytime. Drop new .txt/.csv/.xlsx files in the `data/docs/` folder or use the "Upload Document" area in the app sidebar.
-- After adding or removing documents, rebuild (recompute embeddings / retrain) the vector store by running:
-```powershell
-python src/ingest.py --data_dir data/docs --vs_dir vectorstore
-```
-or click the **Rebuild Vector Store** button in the sidebar of the running app.
-- Once the vector store is rebuilt the app will search over your new content. This means the system works for any domain (legal, product manuals, HR, phrasebooks, etc.) — as long as you update the corpus and rebuild the index, the retrieval and generation will use your context.
-
-
-Quickstart
-1) Create & activate a Python environment
-```powershell
-python -m venv .venv
-.venv\Scripts\activate
-```
-
-2) Install dependencies (Streamlit Cloud-ready)
 ```powershell
 pip install -r requirements.txt
 ```
 
-3) Build the vector store (one-time step or after uploads)
+3. (Optional) Precompute the vectorstore locally and commit it to the repo (recommended for cloud deploys):
+
 ```powershell
-python src/ingest.py --data_dir data/docs --vs_dir vectorstore
+python src/precompute_embeddings.py --data_dir data/docs --vs_dir vectorstore
 ```
 
-4) Run the app
+4. Run the Streamlit app (the repo uses `app.py` as the Streamlit entrypoint):
+
 ```powershell
-streamlit run src/app_streamlit.py
-
-```
-if that doesnt work, do
-
-python -m streamlit run src/app_streamlit.py
-
-Open the URL printed by Streamlit (typically http://localhost:8501) and try example prompts.
-
-Example prompts to try
-- "What are overdraft fees and how can I avoid them?"
-- "Summarize recurring charges in the uploaded statement for May."
-- "How do I say 'I love you' in Fe'efe'e?"
-
-Repository layout
-```
-.  # root
-├─ README.md
-├─ requirements.txt
-├─ data/docs/                # source documents for ingestion
-├─ vectorstore/              # index (created by ingest.py)
-└─ src/
-   ├─ app_streamlit.py       # Streamlit interface
-   ├─ ingest.py              # corpus builder + index creation
-   ├─ rag_pipeline.py        # retrieval + answer generation
-   └─ config.py
+streamlit run app.py --server.port 8501
 ```
 
-Notes for reviewers
-- This demo is intentionally self-contained and modest in compute requirements. Replace the local generator with a production LLM (OpenAI, Bedrock, etc.) and add auth/guardrails for production-readiness.
-- For deployment to Streamlit Cloud, see the pinned `requirements.txt` (below).
+If your shell requires the module form:
 
+```powershell
+python -m streamlit run app.py
+```
 
-Contact / attribution
+What to do in the app
+- Upload documents via the sidebar (supported: .txt, .csv, .xlsx).
+- If you uploaded new documents, rebuild the vector store from the sidebar.
+- Ask questions in the main panel. The app will show retrieved passages and citations.
+- Download the transcript using the Download Transcript button; the app falls back to CSV if openpyxl isn't available in the runtime.
+
+Important runtime notes
+- The app is designed to run with a precomputed `vectorstore/` so cloud deployments do not need heavy ML packages (torch, sentence-transformers). If you remove the precomputed vectorstore and the runtime cannot install ML packages, querying will fall back to a lexical overlap search but quality will be lower.
+- A runtime health banner is shown at the top of the Streamlit UI. It reports:
+   - whether `vectorstore/` loaded successfully, and
+   - whether the `sentence_transformers` package is present (used only when on-demand embeddings are required).
+- For XLSX transcript export we use `openpyxl` when available; otherwise the app falls back to CSV and logs the exception to a runtime temp file for diagnosis.
+
+Where to find more documentation
+- `docs/USAGE.md` — extended usage and examples
+- `docs/DEPLOY_AZURE.md` — instructions and the exact startup command for Azure App Service
+- `docs/ARCHITECTURE.md` — high-level design and component notes
+
+Contributing
+- If you add new data or rebuild the vector store locally, include the `vectorstore/` artifacts in your deployment bundle so the cloud app can run without ML dependencies.
+
+Troubleshooting tips (quick)
+- If you see `ModuleNotFoundError: No module named 'sentence_transformers'` it means the runtime is missing the embedding package — either precompute the vectorstore or add `sentence-transformers` + `torch` to your deployment requirements (not recommended for constrained App Service plans).
+- If you see `ModuleNotFoundError: No module named 'xml'` while importing `openpyxl`, check for a shadowing PyPI package named `xml` in `site-packages` (run `pip list` and look for a top-level package named `xml`) and remove it. The docs in `docs/DEPLOY_AZURE.md` include Kudu commands to inspect the runtime.
+
+License & attribution
 - Repo owner: Shck Tchamna
 
 ---
+
+See the `docs/` folder for more details. If you'd like, I can also add a `Makefile` or VS Code tasks to standardize the run/build workflow.

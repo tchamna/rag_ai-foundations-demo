@@ -9,6 +9,21 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import streamlit as st
+import os
+
+# If Azure started Streamlit by running `streamlit run src/app_streamlit.py`
+# directly, `st.set_page_config` may not have been called first. Guard a
+# fallback here so the page title is still set when the environment variable
+# `STREAMLIT_PAGE_CONFIG_SET` is not present. We make this a no-op when the
+# env var is set to avoid duplicate set_page_config calls.
+if not os.environ.get("STREAMLIT_PAGE_CONFIG_SET"):
+    try:
+        st.set_page_config(page_title="bank-rag-ai-app", page_icon="🏦", layout="wide")
+        # Avoid re-running this block in the same process
+        os.environ["STREAMLIT_PAGE_CONFIG_SET"] = "1"
+    except Exception:
+        # If set_page_config fails (e.g., called too late), continue silently.
+        pass
 import logging
 import traceback
 from pathlib import Path
@@ -118,18 +133,40 @@ def _check_runtime_health():
 
 
 _vs_ok, _st_ok = _check_runtime_health()
-with st.container():
-    col_a, col_b = st.columns([3, 1])
-    with col_a:
-        if _vs_ok:
-            st.success("Vectorstore: precomputed index found (faiss.index + docs.pkl)")
-        else:
-            st.error("Vectorstore: NOT found. Run `python src/precompute_embeddings.py` and commit `vectorstore/` or rebuild index via sidebar.")
-    with col_b:
-        if _st_ok:
-            st.success("sentence-transformers: installed")
-        else:
-            st.info("sentence-transformers: NOT installed — lexical fallback / prebuilt vectors will be used")
+
+# Transient runtime banner: show it once per session for a short duration
+# using a temporary slot (`st.empty()`), then clear that slot so the
+# message is removed without invoking an experimental rerun which can
+# sometimes interact badly with Azure deployments.
+if 'runtime_banner_hidden' not in st.session_state:
+    st.session_state['runtime_banner_hidden'] = False
+
+if not st.session_state['runtime_banner_hidden']:
+    slot = st.empty()
+    with slot.container():
+        col_a, col_b = st.columns([3, 1])
+        with col_a:
+            if _vs_ok:
+                st.success("Vectorstore: precomputed index found (faiss.index + docs.pkl)")
+            else:
+                st.error("Vectorstore: NOT found. Run `python src/precompute_embeddings.py` and commit `vectorstore/` or rebuild index via sidebar.")
+        with col_b:
+            if _st_ok:
+                st.success("sentence-transformers: installed")
+            else:
+                st.info("sentence-transformers: NOT installed — lexical fallback / prebuilt vectors will be used")
+
+    try:
+        import time
+        # Delay briefly so the user notices the banner (short to avoid long page freezes)
+        time.sleep(4)
+        # Clear the slot (removes the banner from the current render)
+        slot.empty()
+        # Mark hidden so it won't be shown again this session
+        st.session_state['runtime_banner_hidden'] = True
+    except Exception:
+        # If anything goes wrong don't crash; leave banner visible
+        pass
 
 # -------------------------
 # Session State
@@ -142,7 +179,7 @@ if "dark_mode" not in st.session_state:
 # -------------------------
 # Theme Toggle
 # -------------------------
-if st.sidebar.button("Toggle Dark Mode"):
+if st.sidebar.button("Toggle Bright Mode"):
     st.session_state["dark_mode"] = not st.session_state["dark_mode"]
     st.rerun()
 
@@ -195,6 +232,9 @@ threshold = st.sidebar.slider(
 # runtime override for top_k and reranker to speed up/slow down behavior
 runtime_top_k = st.sidebar.slider("Top K (retrieval)", 1, 20, TOP_K)
 runtime_use_reranker = st.sidebar.checkbox("Use reranker (may be slower)", value=USE_RERANKER)
+# Ranking strategy: semantic, rerank, weighted, auto
+ranking_strategy = st.sidebar.selectbox("Ranking strategy", options=["auto", "semantic", "rerank", "weighted"], index=0, help="Choose how retrieved chunks are ordered: 'semantic' uses vector scores, 'rerank' uses reranker scores when available, 'weighted' mixes both.")
+rerank_weight = st.sidebar.slider("Rerank weight (when weighted)", 0.0, 1.0, 0.3, 0.05)
 
 # -------------------------
 # Sidebar — Choose Generator
@@ -457,40 +497,117 @@ for m in reversed(st.session_state.get("transcript", [])):
     if m.get("role") == "user":
         last_user = m.get("text", "")
         break
-current_query = last_user.strip() if last_user and last_user.strip() else "introductions"
+# Only set current_query when we actually have a user query. When there is no
+# prior user message we keep `current_query` as None so the preview area does
+# not run retrieval and show results prematurely.
+current_query = last_user.strip() if last_user and last_user.strip() else None
 
 with col2:
     st.markdown("### Retrieved Chunks")
+    # Optional debug toggle to surface reranker/score/final_score values
+    show_debug_scores = st.checkbox("Show debug scores (final / rerank / score)", value=False, key="show_debug_scores")
     try:
-        # Use the safe pipeline factory here so missing deps/vectorstore
-        # don't raise uncaught exceptions that would crash the app on Azure.
-        rag = get_rag_pipeline_safe(use_chatgpt, runtime_use_reranker)
-        if rag is None:
-            st.caption("⚠️ Retrieval pipeline unavailable in this runtime (check logs).")
+        # If there's no user query yet, don't run retrieval — show an
+        # instructional caption instead.
+        if not current_query:
+            st.caption("No query yet — ask a question in the chat to preview retrieved chunks.")
+            ctxs = []
         else:
-            try:
-                ctxs = rag.retrieve(current_query, runtime_top_k)
-            except Exception as e:
-                _log_exception(e, ctx="retrieval_preview - retrieve")
-                st.caption("⚠️ Retrieval failed (check logs).")
+            # Use the safe pipeline factory here so missing deps/vectorstore
+            # don't raise uncaught exceptions that would crash the app on Azure.
+            rag = get_rag_pipeline_safe(use_chatgpt, runtime_use_reranker)
+            if rag is None:
+                st.caption("⚠️ Retrieval pipeline unavailable in this runtime (check logs).")
                 ctxs = []
-
-            for i, c in enumerate(ctxs, 1):
+            else:
                 try:
-                    with st.expander(
-                        f"🔎 Chunk {i} — {c['meta']['source']} (score={c['score']:.3f})",
-                        expanded=False
-                    ):
-                        parts = [p.strip() for p in c["text"].split("|")]
-                        if len(parts) == 3:
-                            st.markdown(f"**English:** {parts[0]}")
-                            st.markdown(f"**Fè’éfě’è:** {parts[1]}")
-                            st.markdown(f"**French:** {parts[2]}")
-                        else:
-                            st.text(c["text"])
+                    # Some cached pipeline objects (from prior Streamlit sessions)
+                    # may not have the newer `ranking_strategy` kwargs on
+                    # `retrieve()`. Try the newer call first and fall back to
+                    # calling the older signature and re-ranking locally when
+                    # a TypeError occurs.
+                    try:
+                        ctxs = rag.retrieve(current_query, runtime_top_k, ranking_strategy=ranking_strategy, rerank_weight=rerank_weight)
+                    except TypeError as e:
+                        # Log and fall back to older signature
+                        _log_exception(e, ctx="retrieval_preview - retrieve - typeerror; falling back to positional call")
+                        st.warning("Ranking options unsupported by cached pipeline; using fallback ordering. Restart the app to refresh the cached pipeline.")
+                        ctxs = rag.retrieve(current_query, runtime_top_k)
+
+                        # Local re-ranking fallback to respect the UI controls
+                        def _apply_local_ranking(contexts, strategy, weight):
+                            if not contexts:
+                                return contexts
+                            has_rerank_local = any(c.get("rerank_score") is not None for c in contexts)
+                            strat = strategy or "auto"
+                            if strat == "auto":
+                                strat = "rerank" if has_rerank_local else "semantic"
+
+                            if strat == "semantic":
+                                for c in contexts:
+                                    c["final_score"] = float(c.get("score", 0.0))
+
+                            elif strat == "rerank":
+                                for c in contexts:
+                                    if c.get("rerank_score") is not None:
+                                        c["final_score"] = float(c.get("rerank_score"))
+                                    else:
+                                        c["final_score"] = float(c.get("score", 0.0))
+
+                            elif strat == "weighted":
+                                rerank_vals = [float(c.get("rerank_score")) for c in contexts if c.get("rerank_score") is not None]
+                                if rerank_vals and len(rerank_vals) > 1:
+                                    rmin, rmax = min(rerank_vals), max(rerank_vals)
+                                elif rerank_vals:
+                                    rmin = rmax = rerank_vals[0]
+                                else:
+                                    rmin = rmax = None
+
+                                for c in contexts:
+                                    s = float(c.get("score", 0.0))
+                                    r = c.get("rerank_score")
+                                    if r is None or rmin is None or rmax is None or rmax == rmin:
+                                        norm_r = 0.5 if r is not None else 0.0
+                                    else:
+                                        norm_r = (float(r) - rmin) / (rmax - rmin)
+                                    alpha = float(weight if weight is not None else 0.3)
+                                    c["final_score"] = alpha * norm_r + (1.0 - alpha) * s
+
+                            else:
+                                for c in contexts:
+                                    c["final_score"] = float(c.get("score", 0.0))
+
+                            contexts.sort(key=lambda x: x.get("final_score", 0.0), reverse=True)
+                            return contexts
+
+                        try:
+                            ctxs = _apply_local_ranking(ctxs, ranking_strategy, rerank_weight)
+                        except Exception as e:
+                            _log_exception(e, ctx="retrieval_preview - local_rerank")
+                            # If even local re-ranking fails, continue with raw contexts
+                            pass
                 except Exception as e:
-                    _log_exception(e, ctx=f"retrieval_preview - render chunk {i}")
-                    st.text("(failed to render chunk; check logs)")
+                    _log_exception(e, ctx="retrieval_preview - retrieve")
+                    st.caption("⚠️ Retrieval failed (check logs).")
+                    ctxs = []
+
+        for i, c in enumerate(ctxs, 1):
+            try:
+                header = f"🔎 Chunk {i} — {c['meta']['source']} (score={c['score']:.3f})"
+                if show_debug_scores:
+                    header += f" | final={c.get('final_score')} | rerank={c.get('rerank_score')}"
+
+                with st.expander(header, expanded=False):
+                    parts = [p.strip() for p in c["text"].split("|")]
+                    if len(parts) == 3:
+                        st.markdown(f"**English:** {parts[0]}")
+                        st.markdown(f"**Fè’éfě’è:** {parts[1]}")
+                        st.markdown(f"**French:** {parts[2]}")
+                    else:
+                        st.text(c["text"])
+            except Exception as e:
+                _log_exception(e, ctx=f"retrieval_preview - render chunk {i}")
+                st.text("(failed to render chunk; check logs)")
     except Exception as e:
         _log_exception(e, ctx="retrieval_preview - outer")
         st.caption("⚠️ Build the index to preview retrieved chunks (check logs for errors).")
@@ -506,11 +623,20 @@ with col2:
         st.success(f"✅ Loaded {len(docs)} chunks")
 
         search_term = st.text_input("Search chunks (optional)", key="vector_search")
-        if search_term:
-            filtered_docs = [d for d in docs if search_term.lower() in d["text"].lower()]
-            st.write(f"Found {len(filtered_docs)} matching chunks")
+        show_all = st.checkbox("Show all chunks", value=False, key="vector_show_all")
+
+        # Only show docs when the user searches OR explicitly requests to
+        # show all. This avoids cluttering the UI with the entire corpus on
+        # first load or when the user hasn't asked anything yet.
+        if not search_term and not show_all:
+            st.caption("No search term — enter text above or enable 'Show all chunks' to list stored chunks.")
+            filtered_docs = []
         else:
-            filtered_docs = docs
+            if search_term:
+                filtered_docs = [d for d in docs if search_term.lower() in d["text"].lower()]
+                st.write(f"Found {len(filtered_docs)} matching chunks")
+            else:
+                filtered_docs = docs
 
         max_show = st.slider("How many to display?", 5, 50, 10, key="vector_max_show")
 
