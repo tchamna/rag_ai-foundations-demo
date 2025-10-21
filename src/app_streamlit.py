@@ -232,9 +232,6 @@ threshold = st.sidebar.slider(
 # runtime override for top_k and reranker to speed up/slow down behavior
 runtime_top_k = st.sidebar.slider("Top K (retrieval)", 1, 20, TOP_K)
 runtime_use_reranker = st.sidebar.checkbox("Use reranker (may be slower)", value=USE_RERANKER)
-# Ranking strategy: semantic, rerank, weighted, auto
-ranking_strategy = st.sidebar.selectbox("Ranking strategy", options=["auto", "semantic", "rerank", "weighted"], index=0, help="Choose how retrieved chunks are ordered: 'semantic' uses vector scores, 'rerank' uses reranker scores when available, 'weighted' mixes both.")
-rerank_weight = st.sidebar.slider("Rerank weight (when weighted)", 0.0, 1.0, 0.3, 0.05)
 
 # -------------------------
 # Sidebar — Choose Generator
@@ -504,8 +501,8 @@ current_query = last_user.strip() if last_user and last_user.strip() else None
 
 with col2:
     st.markdown("### Retrieved Chunks")
-    # Optional debug toggle to surface reranker/score/final_score values
-    show_debug_scores = st.checkbox("Show debug scores (final / rerank / score)", value=False, key="show_debug_scores")
+    # Optional debug toggle to surface reranker/score values
+    show_debug_scores = st.checkbox("Show debug scores (rerank / score)", value=False, key="show_debug_scores")
     try:
         # If there's no user query yet, don't run retrieval — show an
         # instructional caption instead.
@@ -521,71 +518,7 @@ with col2:
                 ctxs = []
             else:
                 try:
-                    # Some cached pipeline objects (from prior Streamlit sessions)
-                    # may not have the newer `ranking_strategy` kwargs on
-                    # `retrieve()`. Try the newer call first and fall back to
-                    # calling the older signature and re-ranking locally when
-                    # a TypeError occurs.
-                    try:
-                        ctxs = rag.retrieve(current_query, runtime_top_k, ranking_strategy=ranking_strategy, rerank_weight=rerank_weight)
-                    except TypeError as e:
-                        # Log and fall back to older signature
-                        _log_exception(e, ctx="retrieval_preview - retrieve - typeerror; falling back to positional call")
-                        st.warning("Ranking options unsupported by cached pipeline; using fallback ordering. Restart the app to refresh the cached pipeline.")
-                        ctxs = rag.retrieve(current_query, runtime_top_k)
-
-                        # Local re-ranking fallback to respect the UI controls
-                        def _apply_local_ranking(contexts, strategy, weight):
-                            if not contexts:
-                                return contexts
-                            has_rerank_local = any(c.get("rerank_score") is not None for c in contexts)
-                            strat = strategy or "auto"
-                            if strat == "auto":
-                                strat = "rerank" if has_rerank_local else "semantic"
-
-                            if strat == "semantic":
-                                for c in contexts:
-                                    c["final_score"] = float(c.get("score", 0.0))
-
-                            elif strat == "rerank":
-                                for c in contexts:
-                                    if c.get("rerank_score") is not None:
-                                        c["final_score"] = float(c.get("rerank_score"))
-                                    else:
-                                        c["final_score"] = float(c.get("score", 0.0))
-
-                            elif strat == "weighted":
-                                rerank_vals = [float(c.get("rerank_score")) for c in contexts if c.get("rerank_score") is not None]
-                                if rerank_vals and len(rerank_vals) > 1:
-                                    rmin, rmax = min(rerank_vals), max(rerank_vals)
-                                elif rerank_vals:
-                                    rmin = rmax = rerank_vals[0]
-                                else:
-                                    rmin = rmax = None
-
-                                for c in contexts:
-                                    s = float(c.get("score", 0.0))
-                                    r = c.get("rerank_score")
-                                    if r is None or rmin is None or rmax is None or rmax == rmin:
-                                        norm_r = 0.5 if r is not None else 0.0
-                                    else:
-                                        norm_r = (float(r) - rmin) / (rmax - rmin)
-                                    alpha = float(weight if weight is not None else 0.3)
-                                    c["final_score"] = alpha * norm_r + (1.0 - alpha) * s
-
-                            else:
-                                for c in contexts:
-                                    c["final_score"] = float(c.get("score", 0.0))
-
-                            contexts.sort(key=lambda x: x.get("final_score", 0.0), reverse=True)
-                            return contexts
-
-                        try:
-                            ctxs = _apply_local_ranking(ctxs, ranking_strategy, rerank_weight)
-                        except Exception as e:
-                            _log_exception(e, ctx="retrieval_preview - local_rerank")
-                            # If even local re-ranking fails, continue with raw contexts
-                            pass
+                    ctxs = rag.retrieve(current_query, runtime_top_k)
                 except Exception as e:
                     _log_exception(e, ctx="retrieval_preview - retrieve")
                     st.caption("⚠️ Retrieval failed (check logs).")

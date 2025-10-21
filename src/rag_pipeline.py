@@ -501,7 +501,7 @@ class RAGPipeline:
 
     
 
-    def retrieve(self, query: str, k: int = TOP_K, ranking_strategy: str = "auto", rerank_weight: float = 0.3) -> List[Dict[str, Any]]:
+    def retrieve(self, query: str, k: int = TOP_K) -> List[Dict[str, Any]]:
         """
         Hybrid retrieval: combines FAISS semantic search with lexical matching.
         Ensures numeric/date queries (like '06', '07/05', 'June') return exact matches.
@@ -572,64 +572,27 @@ class RAGPipeline:
         if reranker and ctxs:
             ctxs = reranker.rerank(query, ctxs)
 
-        # Decide how to compute the final metric used for sorting. We support
-        # three strategies:
-        # - "semantic": use semantic/lexical `score` only
-        # - "rerank": use `rerank_score` when available, otherwise fall back to `score`
-        # - "weighted": combine normalized rerank_score and semantic `score` using `rerank_weight` (0..1)
-        # - "auto": prefer rerank if the reranker is enabled, otherwise semantic
+        # Ensure contexts are ordered by descending score by default so the
+        # highest-scoring chunk is shown first in the UI. If a reranker is
+        # enabled it will re-order these contexts as needed.
         try:
-            # Prepare reranker outputs if any exist in ctxs
-            has_rerank = any(c.get("rerank_score") is not None for c in ctxs)
-            strategy = ranking_strategy or "auto"
-            if strategy == "auto":
-                strategy = "rerank" if has_rerank else "semantic"
-
-            if strategy == "semantic":
-                for c in ctxs:
-                    c["final_score"] = float(c.get("score", 0.0))
-
-            elif strategy == "rerank":
-                for c in ctxs:
-                    if c.get("rerank_score") is not None:
-                        c["final_score"] = float(c.get("rerank_score"))
-                    else:
-                        c["final_score"] = float(c.get("score", 0.0))
-
-            elif strategy == "weighted":
-                # Normalize rerank_score across the returned contexts to [0,1]
-                rerank_vals = [float(c.get("rerank_score")) for c in ctxs if c.get("rerank_score") is not None]
-                if rerank_vals and len(rerank_vals) > 1:
-                    rmin, rmax = min(rerank_vals), max(rerank_vals)
-                elif rerank_vals:
-                    rmin = rmax = rerank_vals[0]
-                else:
-                    rmin = rmax = None
-
-                for c in ctxs:
-                    s = float(c.get("score", 0.0))
-                    r = c.get("rerank_score")
-                    if r is None or rmin is None or rmax is None or rmax == rmin:
-                        norm_r = 0.5 if r is not None else 0.0
-                    else:
-                        norm_r = (float(r) - rmin) / (rmax - rmin)
-
-                    alpha = float(rerank_weight if rerank_weight is not None else 0.3)
-                    # final score is a weighted sum of normalized rerank and semantic score
-                    c["final_score"] = alpha * norm_r + (1.0 - alpha) * s
-
-            else:
-                # Unknown strategy: default to semantic
-                for c in ctxs:
-                    c["final_score"] = float(c.get("score", 0.0))
-
-            ctxs.sort(key=lambda c: c.get("final_score", 0.0), reverse=True)
+            ctxs.sort(key=lambda c: c.get("score", 0.0), reverse=True)
         except Exception:
-            # If anything goes wrong, fall back to previous score-based sort
-            try:
-                ctxs.sort(key=lambda c: c.get("score", 0.0), reverse=True)
-            except Exception:
-                pass
+            pass
+
+        # --------- Rerank (if enabled) ----------
+        reranker = self.get_reranker()
+        if reranker and ctxs:
+            ctxs = reranker.rerank(query, ctxs)
+
+        # Final sort by the chosen 'final metric' so the UI always shows the
+        # highest-scoring context first. Prefer `rerank_score` if available
+        # (set by the reranker), otherwise fall back to the semantic/lexical
+        # `score` computed above.
+        try:
+            ctxs.sort(key=lambda c: (c.get("rerank_score", float("-inf")), c.get("score", 0.0)), reverse=True)
+        except Exception:
+            pass
 
         return ctxs[:k]
 
@@ -645,10 +608,29 @@ class RAGPipeline:
         # Limit to top contexts (to reduce noise)
         top_contexts = contexts[:3]
 
+        # For direct extraction (FAQ or phrasebook cases) prefer a single
+        # primary context chosen according to the strongest available
+        # signal. If reranker scores exist for the returned contexts,
+        # choose the context with the largest absolute `rerank_score`
+        # (magnitude indicates strength). Otherwise fall back to the
+        # highest semantic `score`.
+        #
+        # Keep `top_contexts` for generation prompts and display; use the
+        # `primary_order` list for direct-match shortcuts below.
+        if any(c.get("rerank_score") is not None for c in top_contexts):
+            # sort by absolute magnitude of rerank_score (larger magnitude first)
+            primary_order = sorted(
+                top_contexts,
+                key=lambda c: abs(float(c.get("rerank_score", 0.0))),
+                reverse=True,
+            )
+        else:
+            primary_order = sorted(top_contexts, key=lambda c: c.get("score", 0.0), reverse=True)
+
         # ------------------------------
         # FAQ-style shortcut
         # ------------------------------
-        for i, c in enumerate(top_contexts):
+        for i, c in enumerate(primary_order):
             text = c["text"]
             if text.strip().startswith("Q:") and "A:" in text:
                 qna_parts = text.split("A:", 1)
@@ -671,85 +653,85 @@ class RAGPipeline:
                         "mode": "faq",
                     }
 
-        # ------------------------------
-        # Phrasebook style (Fe'efe'e first)
-        # ------------------------------
-        for i, c in enumerate(top_contexts):
-            text = c["text"]
-            if "Fe'efe'e:" in text:
-                # Try to extract English, Fe'efe'e and French parts where present
-                eng = None
-                feefee = None
-                fr = None
-                # The text format is usually like:
-                # English: ...\nFe'efe'e: ...\nFrench: ...
-                if "English:" in text:
-                    eng = text.split("English:", 1)[1].split("Fe'efe'e:", 1)[0].strip()
+            # ------------------------------
+            # Phrasebook style (Fe'efe'e first)
+            # ------------------------------
+            for j, c in enumerate(primary_order):
+                text = c.get("text", "")
                 if "Fe'efe'e:" in text:
-                    feefee = text.split("Fe'efe'e:", 1)[1]
-                    if "French:" in feefee:
-                        feefee, fr_part = feefee.split("French:", 1)
-                        fr = fr_part.strip()
-                    feefee = feefee.strip()
-                # Build answer including available parts
-                # Clean parts and produce a polished sentence
-                feefee_clean = _clean_phrase(feefee) if feefee else None
-                eng_clean = _clean_phrase(eng) if eng else None
-                fr_clean = _clean_phrase(fr) if fr else None
+                    # Try to extract English, Fe'efe'e and French parts where present
+                    eng = None
+                    feefee = None
+                    fr = None
+                    # The text format is usually like:
+                    # English: ...\nFe'efe'e: ...\nFrench: ...
+                    if "English:" in text:
+                        eng = text.split("English:", 1)[1].split("Fe'efe'e:", 1)[0].strip()
+                    if "Fe'efe'e:" in text:
+                        feefee = text.split("Fe'efe'e:", 1)[1]
+                        if "French:" in feefee:
+                            feefee, fr_part = feefee.split("French:", 1)
+                            fr = fr_part.strip()
+                        feefee = feefee.strip()
 
-                # Build human-friendly answer: Fe'efe'e sentence followed by
-                # parenthetical English and French if available.
-                if feefee_clean:
-                    if eng_clean or fr_clean:
-                        tail = " — ".join([p for p in (eng_clean, fr_clean) if p])
-                        answer = f"{feefee_clean} ({tail})"
+                    # Build answer including available parts
+                    feefee_clean = _clean_phrase(feefee) if feefee else None
+                    eng_clean = _clean_phrase(eng) if eng else None
+                    fr_clean = _clean_phrase(fr) if fr else None
+
+                    # Build human-friendly answer: Fe'efe'e sentence followed by
+                    # parenthetical English and French if available.
+                    if feefee_clean:
+                        if eng_clean or fr_clean:
+                            tail = " — ".join([p for p in (eng_clean, fr_clean) if p])
+                            answer = f"{feefee_clean} ({tail})"
+                        else:
+                            answer = feefee_clean
                     else:
-                        answer = feefee_clean
-                else:
-                    # fallback to combining available translations
-                    answer = " — ".join([p for p in (eng_clean, fr_clean) if p])
+                        # fallback to combining available translations
+                        answer = " — ".join([p for p in (eng_clean, fr_clean) if p])
 
-                full_prompt = f"""
-                [Phrasebook Direct Match]
+                    full_prompt = f"""
+                    [Phrasebook Direct Match]
 
-                Question: {query}
+                    Question: {query}
 
-                Matched Source: {c['meta']['source']}
-                Context: {text}
+                    Matched Source: {c['meta']['source']}
+                    Context: {text}
 
-                Extracted Fe'efe'e Answer: {answer}
-                """
+                    Extracted Fe'efe'e Answer: {answer}
+                    """
 
-                # If ChatGPT is enabled, ask it to rewrite the phrasebook
-                # content into a polished, natural sentence (Fe'efe'e first,
-                # then English and French in parentheses). Keep faithful to
-                # the original content and remove numbering/artifacts.
-                if self.use_chatgpt:
-                    rp = f"""
-                                You are a helpful assistant. Rewrite the following phrasebook entry into a polished, natural-sounding sentence.
-                                Requirements:
-                                - Start with the Fe'efe'e sentence (exact or slight normalization).
-                                - Then include the English and French translations in parentheses, separated by ' — ' if both are present.
-                                - Remove any numbering or chunk artifacts. Do NOT add or invent content.
+                    # If ChatGPT is enabled, ask it to rewrite the phrasebook
+                    # content into a polished, natural sentence (Fe'efe'e first,
+                    # then English and French in parentheses). Keep faithful to
+                    # the original content and remove numbering/artifacts.
+                    if self.use_chatgpt:
+                        rp = f"""
+                                    You are a helpful assistant. Rewrite the following phrasebook entry into a polished, natural-sounding sentence.
+                                    Requirements:
+                                    - Start with the Fe'efe'e sentence (exact or slight normalization).
+                                    - Then include the English and French translations in parentheses, separated by ' — ' if both are present.
+                                    - Remove any numbering or chunk artifacts. Do NOT add or invent content.
 
-                                Input: {answer}
+                                    Input: {answer}
 
-                                Output:
-                                """
-                    try:
-                        polished = self.generator.generate(rp, max_new_tokens=120).strip()
-                        if polished:
-                            answer = polished
-                            full_prompt += "\n\n[Refined with GPT]"
-                    except Exception:
-                        pass
+                                    Output:
+                                    """
+                        try:
+                            polished = self.generator.generate(rp, max_new_tokens=120).strip()
+                            if polished:
+                                answer = polished
+                                full_prompt += "\n\n[Refined with GPT]"
+                        except Exception:
+                            pass
 
-                return {
-                    "answer": f"{answer} [{i+1}]",
-                    "contexts": top_contexts,
-                    "prompt": full_prompt.strip(),
-                    "mode": "phrasebook",
-                }
+                    return {
+                        "answer": f"{answer} [{j+1}]",
+                        "contexts": top_contexts,
+                        "prompt": full_prompt.strip(),
+                        "mode": "phrasebook",
+                    }
 
         # ------------------------------
         # GPT branch (if enabled)

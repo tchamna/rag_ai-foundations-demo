@@ -79,3 +79,39 @@ License & attribution
 ---
 
 See the `docs/` folder for more details. If you'd like, I can also add a `Makefile` or VS Code tasks to standardize the run/build workflow.
+
+## Scoring and Ranking
+
+This application returns multiple numeric signals for every retrieved context. Understanding these will help you interpret results and tune the app's behavior.
+
+- `score` (semantic score)
+   - Source: FAISS index (or lexical-overlap fallback when embeddings are not available).
+   - Meaning: a measure of semantic similarity (or token overlap) between query and chunk. When embeddings are normalized the app maps FAISS values into a user-friendly range for display. Higher is better.
+   - When used: the default relevance metric when no reranker is enabled.
+
+- `rerank_score` (cross-encoder / reranker)
+   - Source: an optional CrossEncoder-style reranker (SentenceTransformers CrossEncoder) that scores (query, context) pairs.
+   - Meaning: a model-dependent scalar (often raw logits) which can be negative or positive. Larger values indicate higher predicted relevance. Many reranker models can output negative logits, but a positive value is typically a stronger relevance signal than a negative one — regardless, ranking compares these values relative to each other and selects the larger value as more relevant.
+   - When used: if a reranker is enabled, the pipeline can use `rerank_score` instead of (or alongside) `score` to refine ordering.
+
+- `final_score` (decision metric)
+   - Source: computed by the retrieval pipeline according to the selected ranking strategy.
+   - Meaning: a single numeric value used to order contexts and to choose the primary context for short-answer extraction.
+
+Ranking strategies available in the app
+
+- `semantic` — order by `score` only. Use this when you prefer vector-similarity to determine winners.
+- `rerank` — prefer `rerank_score` when available; fall back to `score` when a context lacks a reranker value.
+- `weighted` — normalize reranker outputs across returned contexts and combine them with semantic `score` using a tunable `rerank_weight` (0..1). This lets you keep semantic similarity as the dominant signal but let the reranker influence ties.
+- `auto` — prefer reranker when it produced scores for the returned contexts; otherwise use semantic.
+
+Practical tips
+
+- If you deploy without a reranker (lighter runtime), use `semantic` or `auto`. The app will fall back to lexical matching when embeddings are unavailable.
+- If you enable the reranker but observe surprising orderings, try `weighted` with a low `rerank_weight` (e.g., 0.2) so semantic score remains primary.
+- Use the debug toggle in the Retrieved Chunks panel to show `score`, `rerank_score`, and `final_score` for each chunk so you can diagnose why a particular chunk was chosen.
+
+Why a chunk with higher `score` might not be chosen
+
+- If the reranker is enabled and assigns a much higher (less negative or larger) `rerank_score` to a chunk with a slightly lower semantic `score`, the reranker will make that chunk the `final_score` winner. In that case choose `semantic` or `weighted` with a low rerank weight if you want vector-similarity to win.
+

@@ -21,7 +21,7 @@ Steps to deploy:
     git push
     ```
 
-6. Push the repo to the Space. The entrypoint `app.py` will load `src.app_gradio.demo` and start the UI.
+6. Push the repo to the Space. The entrypoint `app.py` will start the configured demo (update the Space entrypoint as needed).
 
 Notes:
 - If `faiss` cannot be built on Spaces, commit only `docs.pkl` and the app will fall back to lexical search.
