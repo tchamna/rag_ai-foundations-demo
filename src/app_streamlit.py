@@ -189,6 +189,12 @@ if st.session_state["dark_mode"]:
 else:
     st.markdown(get_theme_css(False), unsafe_allow_html=True)
 
+# Inject persistent 'Open menu' hint near the sidebar chevron (always visible)
+st.markdown(
+    '''<div id="open-menu-hint" style="position:fixed;top:15px;left:10px;z-index:9999;padding:2px 10px;background:rgba(20,20,20,0.85);color:#fff;font-size:15px;border-radius:6px;box-shadow:0 2px 8px rgba(0,0,0,0.12);pointer-events:none;user-select:none;">Open menu</div>''',
+    unsafe_allow_html=True
+)
+
 # -------------------------
 # Sidebar — Index Builder
 # -------------------------
@@ -263,6 +269,13 @@ col1, col2 = st.columns([2, 1])
 
 with col1:
     st.subheader("Chat — ask a question")
+
+    # Example questions guide
+    with st.expander("Example Questions (click to expand)"):
+        st.markdown("- What are overdraft fees?")
+        st.markdown("- What's the ATM withdrawal limit?")
+        st.markdown("- What's the minimum balance requirement?")
+        st.markdown("- Tell me more about checking accounts")
 
     # Prepare session state for chat messages and input
     if "chat_input" not in st.session_state:

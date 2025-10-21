@@ -1,0 +1,19 @@
+Pitch it to the hiring manager
+
+Problem: “Enable customers to ask questions about their statements, fees, and policies.”
+
+Solution: RAG app with LLMs + VectorDB; upload statements, grounded answers with citations.
+
+Stack: PyTorch, Transformers (FLAN-T5), SentenceTransformers (all-MiniLM-L6-v2), FAISS, Streamlit.
+
+Scaling path: swap local generator for AWS Bedrock or Hugging Face Inference; store artifacts in S3; containerize via Docker, deploy on ECS/EKS; add guardrails and telemetry.
+
+Screenshots + short Loom walkthrough recommended.
+
+If you want, I can also provide:
+
+A Dockerfile and Makefile,
+
+An AWS deploy variant (S3/ECR/ECS),
+
+A short one-pager or slide deck to email with the demo.

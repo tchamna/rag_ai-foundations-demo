@@ -1,0 +1,9 @@
+STATEMENT (Sample: June 2024)
+Account: Checking • Ending Balance: $1,250.45
+
+Transactions:
+06/02 Grocery Store -$45.67
+06/03 Direct Deposit +$2,000.00
+06/07 ATM Withdrawal -$200.00
+06/10 Netflix Subscription -$14.99
+06/15 Utility Payment -$120.30
