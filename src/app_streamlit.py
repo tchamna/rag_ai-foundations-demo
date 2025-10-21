@@ -329,12 +329,41 @@ with col1:
     # Chat message area (render transcript)
     chat_container = st.container()
     Assistant_name = "Shck Tchamna"
+    # Render chat messages inside bordered boxes to delimit question/answer
+    # Safely escape user content to avoid HTML injection while allowing simple markdown.
+    def _escape(s: str) -> str:
+        import html
+        return html.escape(s)
+
+    user_box_style = """
+    <div style='border-radius:8px; padding:10px; margin:6px 0; background:#e8f0ff; border:1px solid #c7ddff; text-align:left; color:#000;'>
+    <strong style='color:#000;'>You:</strong>
+    <div style='margin-top:6px; white-space:pre-wrap; color:#000;'>%s</div>
+    </div>
+    """
+
+    assistant_box_style = """
+    <div style='border-radius:8px; padding:10px; margin:6px 0; background:#f6fff0; border:1px solid #dff7d1; text-align:left; color:#000;'>
+    <strong style='color:#000;'>%s:</strong>
+    <div style='margin-top:6px; white-space:pre-wrap; color:#000;'>%s</div>
+    </div>
+    """
+
     with chat_container:
         for msg in st.session_state.get("transcript", []):
-            if msg.get("role") == "user":
-                st.markdown(f"**You:** {msg.get('text')}")
-            else:
-                st.markdown(f"**{Assistant_name}:** {msg.get('text')}" )
+            try:
+                role = msg.get("role")
+                text = msg.get("text", "") or ""
+                safe_text = _escape(text)
+                if role == "user":
+                    st.markdown(user_box_style % (safe_text,), unsafe_allow_html=True)
+                else:
+                    # assistant may include citations or other small HTML from generation; escape to be safe
+                    name = Assistant_name
+                    st.markdown(assistant_box_style % (name, safe_text), unsafe_allow_html=True)
+            except Exception as e:
+                _log_exception(e, ctx="render_chat_message")
+                st.markdown(f"**{Assistant_name}:** (failed to render message)")
 
     # Input box that submits on Enter via on_change
     # Provide a collapsed (hidden) label to avoid Streamlit's empty-label
