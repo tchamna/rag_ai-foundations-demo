@@ -123,7 +123,7 @@ def _read_xlsx_faqs(fp: Path) -> List[str]:
 
 # ----------------- Corpus Loader -----------------
 
-def load_corpus(data_dir: Path) -> List[Dict[str, Any]]:
+def load_corpus(data_dir: Path, language: str = "feefee") -> List[Dict[str, Any]]:
     corpus = []
     for p in data_dir.glob("**/*"):
         if p.is_dir():
@@ -137,7 +137,14 @@ def load_corpus(data_dir: Path) -> List[Dict[str, Any]]:
                 if "|" in line:  # phrasebook style
                     parts = [seg.strip() for seg in line.split("|")]
                     if len(parts) == 3:
-                        text = f"English: {parts[0]}\nFe'efe'e: {parts[1]}\nFrench: {parts[2]}"
+                        if language == "english":
+                            text = f"English: {parts[0]}"
+                        elif language == "feefee":
+                            text = f"Fe'efe'e: {parts[1]}"
+                        elif language == "french":
+                            text = f"French: {parts[2]}"
+                        else:
+                            text = f"English: {parts[0]}\nFe'efe'e: {parts[1]}\nFrench: {parts[2]}"
                     else:
                         text = line.strip()
                 else:
@@ -149,6 +156,8 @@ def load_corpus(data_dir: Path) -> List[Dict[str, Any]]:
                 })
 
         elif p.suffix.lower() == ".csv" and "faq" in p.name.lower():
+            if language != "english":
+                continue  # FAQs are in English
             df = pd.read_csv(p)
             for idx, (_, r) in enumerate(df.iterrows(), start=1):
                 q = str(r.get("question", "")).strip()
@@ -162,6 +171,8 @@ def load_corpus(data_dir: Path) -> List[Dict[str, Any]]:
                     })
 
         elif p.suffix.lower() == ".xlsx":
+            if language != "english":
+                continue  # FAQs are in English
             df = pd.read_excel(p)
             for idx, (_, r) in enumerate(df.iterrows(), start=1):
                 q = str(r.get("question", "")).strip()
@@ -469,9 +480,11 @@ class RAGPipeline:
         vs_dir: Path = VECTORSTORE_DIR,
         use_chatgpt: bool = False,
         use_reranker: bool = True,
-        refine_phrasebook_with_gpt: bool = False, 
+        refine_phrasebook_with_gpt: bool = False,
+        language: str = "feefee",
     ):
-        self.vs_dir = vs_dir
+        self.language = language
+        self.vs_dir = vs_dir / language
         self.index = VectorIndex()
         self.use_chatgpt = use_chatgpt
         self.refine_phrasebook_with_gpt = refine_phrasebook_with_gpt

@@ -19,9 +19,11 @@ except ImportError as e:
     sys.exit(1)
 
 
-def run(data_dir: Path = DATA_DIR, vs_dir: Path = VECTORSTORE_DIR):
-    print(f"Loading corpus from {data_dir}")
-    corpus = load_corpus(data_dir)
+def run(data_dir: Path = DATA_DIR, vs_dir: Path = VECTORSTORE_DIR, language: str = "feefee"):
+    data_dir = data_dir / language
+    vs_dir = vs_dir / language
+    print(f"Loading corpus from {data_dir} for language {language}")
+    corpus = load_corpus(data_dir, language)
     print(f"Loaded {len(corpus)} files")
     docs = build_documents(corpus)
     print(f"Split into {len(docs)} chunks")
@@ -38,5 +40,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Precompute embeddings for RAG pipeline")
     parser.add_argument('--data_dir', type=Path, default=DATA_DIR, help='Directory containing the data files')
     parser.add_argument('--vs_dir', type=Path, default=VECTORSTORE_DIR, help='Directory to save the vectorstore')
+    parser.add_argument('--language', type=str, default='feefee', choices=['english', 'feefee', 'french'], help='Language to build vectors for')
     args = parser.parse_args()
-    run(data_dir=args.data_dir, vs_dir=args.vs_dir)
+    run(data_dir=args.data_dir, vs_dir=args.vs_dir, language=args.language)

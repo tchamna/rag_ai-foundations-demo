@@ -1,5 +1,7 @@
 # RAG AI Foundations Demo
 
+![RAG Demo Bank Assistant](assets/rag-demo-bank-assistant.jpg)
+
 This repository is a small Retrieval-Augmented Generation (RAG) demo that combines FAISS vector search, SentenceTransformers embeddings, and text generation (local FLAN-T5 or ChatGPT). It includes:
 
 - A Streamlit dashboard (`src/app_streamlit.py`) for interactive Q&A and transcript downloads (XLSX).

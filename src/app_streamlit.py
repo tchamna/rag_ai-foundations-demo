@@ -52,9 +52,9 @@ from src.theme import get_theme_css
 
 # Cached RAG pipeline factory to avoid reinitializing models on every submit
 @st.cache_resource
-def get_rag_pipeline(use_chatgpt_flag: bool, use_reranker_flag: bool):
+def get_rag_pipeline(use_chatgpt_flag: bool, use_reranker_flag: bool, language: str):
     rp = RAGPipeline(
-        VECTORSTORE_DIR,
+        language=language,
         use_chatgpt=use_chatgpt_flag,
         use_reranker=use_reranker_flag,
         refine_phrasebook_with_gpt=False,
@@ -63,12 +63,12 @@ def get_rag_pipeline(use_chatgpt_flag: bool, use_reranker_flag: bool):
     return rp
 
 
-def get_rag_pipeline_safe(use_chatgpt_flag: bool, use_reranker_flag: bool):
+def get_rag_pipeline_safe(use_chatgpt_flag: bool, use_reranker_flag: bool, language: str):
     """Create the RAG pipeline but catch missing heavy deps and vectorstore errors.
     Returns None on failure and shows a friendly Streamlit warning where appropriate.
     """
     try:
-        return get_rag_pipeline(use_chatgpt_flag, use_reranker_flag)
+        return get_rag_pipeline(use_chatgpt_flag, use_reranker_flag, language)
     except FileNotFoundError as e:
         st.warning("Vector store not found. Build the index (sidebar) or run the ingest script before querying.")
         return None
@@ -102,7 +102,8 @@ def _log_exception(e: Exception, ctx: str = ""):
 # -------------------------
 # Page config is handled in app.py to ensure set_page_config() is the
 # first Streamlit call in the process. Here we only set the title/caption.
-st.title("🏦 Banking Assistant — RAG Demo")
+language = st.session_state.get("language", "feefee")
+st.title(f"🏦 Banking Assistant — RAG Demo ({language.capitalize()})")
 st.caption("Demo with FAISS + SentenceTransformers + FLAN-T5 or ChatGPT | Upload docs and ask questions.")
 
 # -------------------------
@@ -116,7 +117,7 @@ def _check_runtime_health():
     """
     vs_ok = False
     try:
-        vs_path = Path(VECTORSTORE_DIR)
+        vs_path = Path(VECTORSTORE_DIR) / "feefee"  # Check default language
         vs_ok = (vs_path / "faiss.index").exists() and (vs_path / "docs.pkl").exists()
     except Exception:
         vs_ok = False
@@ -175,6 +176,8 @@ if "transcript" not in st.session_state:
     st.session_state["transcript"] = []
 if "dark_mode" not in st.session_state:
     st.session_state["dark_mode"] = True
+if "language" not in st.session_state:
+    st.session_state["language"] = "feefee"
 
 # -------------------------
 # Theme Toggle
@@ -196,23 +199,33 @@ st.markdown(
 )
 
 # -------------------------
+# Sidebar — Language Selection
+# -------------------------
+st.sidebar.header("Language Selection")
+language_options = ["feefee", "english", "french"]
+language = st.sidebar.selectbox("Select Language", language_options, index=language_options.index(st.session_state["language"]))
+st.session_state["language"] = language
+
+# -------------------------
 # Sidebar — Index Builder
 # -------------------------
 st.sidebar.header("Index Builder")
 rebuild = st.sidebar.button("Rebuild Vector Store")
 status = st.sidebar.empty()
 
-def rebuild_index():
+def rebuild_index(language):
     status.info("Building vector store...")
-    corpus = load_corpus(DATA_DIR)
+    corpus = load_corpus(DATA_DIR, language)
     docs = build_documents(corpus)
     index = VectorIndex()
     index.build(docs)
-    index.save(VECTORSTORE_DIR)
-    status.success(f"Built vector store with {len(docs)} chunks.")
+    vs_dir = VECTORSTORE_DIR / language
+    vs_dir.mkdir(parents=True, exist_ok=True)
+    index.save(vs_dir)
+    status.success(f"Built vector store with {len(docs)} chunks for {language}.")
 
 if rebuild:
-    rebuild_index()
+    rebuild_index(language)
 
 # -------------------------
 # Sidebar — Upload
@@ -315,7 +328,7 @@ with col1:
             override = st.session_state.pop("chat_use_chatgpt_override", None)
             local_use_chatgpt = use_chatgpt if override is None else bool(override)
 
-            rag = get_rag_pipeline_safe(local_use_chatgpt, runtime_use_reranker)
+            rag = get_rag_pipeline_safe(local_use_chatgpt, runtime_use_reranker, language)
             if rag is None:
                 st.session_state["transcript"].append({"role": "assistant", "text": "Error: retrieval pipeline not available in this runtime. Check logs or enable the ML runtime."})
                 return
@@ -596,7 +609,7 @@ with col2:
         else:
             # Use the safe pipeline factory here so missing deps/vectorstore
             # don't raise uncaught exceptions that would crash the app on Azure.
-            rag = get_rag_pipeline_safe(use_chatgpt, runtime_use_reranker)
+            rag = get_rag_pipeline_safe(use_chatgpt, runtime_use_reranker, language)
             if rag is None:
                 st.caption("⚠️ Retrieval pipeline unavailable in this runtime (check logs).")
                 ctxs = []
@@ -635,9 +648,10 @@ with col2:
 with col2:
     st.markdown("### Vector DB Browser")
     try:
-        with open(VECTORSTORE_DIR / "docs.pkl", "rb") as f:
+        docs_path = VECTORSTORE_DIR / language / "docs.pkl"
+        with open(docs_path, "rb") as f:
             docs = pickle.load(f)
-        st.success(f"✅ Loaded {len(docs)} chunks")
+        st.success(f"✅ Loaded {len(docs)} chunks for {language}")
 
         search_term = st.text_input("Search chunks (optional)", key="vector_search")
         show_all = st.checkbox("Show all chunks", value=False, key="vector_show_all")
@@ -662,16 +676,16 @@ with col2:
                 st.text(d["text"])
 
     except FileNotFoundError:
-        st.warning("No docs found. Build the vector store to enable browsing.")
+        st.warning(f"No docs found for {language}. Build the vector store to enable browsing.")
         if st.button("Build vector store now", key="vector_rebuild"):
             try:
-                rebuild_index()
+                rebuild_index(language)
                 st.experimental_rerun()
             except Exception as e:
                 st.error(f"Build failed: {e}")
     except Exception as e:
         _log_exception(e, ctx="vector_db_browser")
-        st.error(f"Could not load docs.pkl: {e}")
+        st.error(f"Could not load docs.pkl for {language}: {e}")
 
 
     # (no top-level except here; inner try/except blocks handle page sections)
