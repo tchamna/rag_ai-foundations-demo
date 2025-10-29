@@ -645,9 +645,8 @@ with col2:
         max_show = st.slider("How many to display?", 5, 50, 10, key="vector_max_show")
 
         for i, d in enumerate(filtered_docs[:max_show]):
-            with st.expander(f"Chunk {i+1} — {d['meta'].get('source','N/A')}"):
-                st.text(d["text"])
-
+                with st.expander(f"Chunk {i+1} — {d['meta'].get('source','N/A')}"):
+                    st.code(d["text"], language=None)
     except FileNotFoundError:
         st.warning("No docs found. Build the vector store to enable browsing.")
         if st.button("Build vector store now", key="vector_rebuild"):

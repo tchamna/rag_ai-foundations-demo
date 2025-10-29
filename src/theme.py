@@ -94,6 +94,14 @@ def get_theme_css(dark_mode: bool) -> str:
 
         .stBadge, .stInfoBox { background: var(--panel) !important; color: var(--text) !important; }
 
+        pre, code, .stText, .stText pre, .stText code, .stCodeBlock, .stCodeBlock pre, .stCodeBlock code {
+            color: var(--text) !important;
+            background: var(--card) !important;
+            border: 1px solid var(--border) !important;
+            padding: 8px !important;
+            border-radius: 4px !important;
+        }
+
         </style>
         """
     else:

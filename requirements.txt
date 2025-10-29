@@ -4,5 +4,9 @@ numpy>=1.25.2
 openpyxl>=3.1.2
 faiss-cpu>=1.7.4
 scikit-learn>=1.2.2
+faker>=20.0.0
+langchain>=0.1.0
+langchain-community>=0.0.20
+langchain-huggingface>=0.0.3
 # Optional: small utilities
 python-multipart>=0.0.5

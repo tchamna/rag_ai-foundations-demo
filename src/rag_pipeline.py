@@ -18,7 +18,15 @@ except Exception:
     AutoTokenizer = None  # type: ignore
     AutoModelForSeq2SeqLM = None  # type: ignore
 
-
+# LangChain imports
+try:
+    from langchain_community.vectorstores import FAISS
+    from langchain_huggingface import HuggingFaceEmbeddings
+    from langchain_core.documents import Document
+except Exception:
+    FAISS = None
+    HuggingFaceEmbeddings = None
+    Document = None
 
 from src.config import (
     DATA_DIR, VECTORSTORE_DIR, EMBEDDING_MODEL, GENERATION_MODEL,
@@ -129,50 +137,58 @@ def load_corpus(data_dir: Path) -> List[Dict[str, Any]]:
         if p.is_dir():
             continue
 
-        if p.suffix.lower() == ".txt":
-            lines = p.read_text(encoding="utf-8").splitlines()
-            for i, line in enumerate(lines):
-                if not line.strip():
-                    continue
-                if "|" in line:  # phrasebook style
-                    parts = [seg.strip() for seg in line.split("|")]
-                    if len(parts) == 3:
-                        text = f"English: {parts[0]}\nFe'efe'e: {parts[1]}\nFrench: {parts[2]}"
+        try:
+            if p.suffix.lower() == ".txt":
+                lines = p.read_text(encoding="utf-8").splitlines()
+                for i, line in enumerate(lines):
+                    if not line.strip():
+                        continue
+                    if "|" in line:  # phrasebook style
+                        parts = [seg.strip() for seg in line.split("|")]
+                        if len(parts) == 3:
+                            text = f"English: {parts[0]}\nFe'efe'e: {parts[1]}\nFrench: {parts[2]}"
+                        else:
+                            text = line.strip()
                     else:
                         text = line.strip()
+                    corpus.append({
+                        "id": f"{p}#{i}",
+                        "text": text,
+                        "meta": {"source": f"{p.name} (line {i+1})"}
+                    })
+
+            elif p.suffix.lower() in [".csv", ".xlsx"]:
+                if p.suffix.lower() == ".csv":
+                    df = pd.read_csv(p)
                 else:
-                    text = line.strip()
-                corpus.append({
-                    "id": f"{p}#{i}",
-                    "text": text,
-                    "meta": {"source": f"{p.name} (line {i+1})"}
-                })
-
-        elif p.suffix.lower() == ".csv" and "faq" in p.name.lower():
-            df = pd.read_csv(p)
-            for idx, (_, r) in enumerate(df.iterrows(), start=1):
-                q = str(r.get("question", "")).strip()
-                a = str(r.get("answer", "")).strip()
-                if q and a:
-                    text = f"Q: {q}\nA: {a}"
+                    df = pd.read_excel(p)
+                
+                for idx, (_, r) in enumerate(df.iterrows(), start=1):
+                    # Create a descriptive text from the row
+                    if "question" in df.columns and "answer" in df.columns:
+                        # FAQ format
+                        q = str(r.get("question", "")).strip()
+                        a = str(r.get("answer", "")).strip()
+                        if q and a:
+                            text = f"Q: {q}\nA: {a}"
+                        else:
+                            continue
+                    else:
+                        # General row: concatenate all values
+                        values = [str(v).strip() for v in r.values if str(v).strip()]
+                        text = " ".join(values)
+                        if not text:
+                            continue
+                    
                     corpus.append({
                         "id": f"{p}#{idx}",
                         "text": text,
                         "meta": {"source": f"{p.name} (row {idx})"}
                     })
-
-        elif p.suffix.lower() == ".xlsx":
-            df = pd.read_excel(p)
-            for idx, (_, r) in enumerate(df.iterrows(), start=1):
-                q = str(r.get("question", "")).strip()
-                a = str(r.get("answer", "")).strip()
-                if q and a:
-                    text = f"Q: {q}\nA: {a}"
-                    corpus.append({
-                        "id": f"{p}#{idx}",
-                        "text": text,
-                        "meta": {"source": f"{p.name} (row {idx})"}
-                    })
+        except Exception as e:
+            # Skip unreadable files
+            print(f"Warning: could not load {p}: {e}")
+            continue
 
     return corpus
 
@@ -206,20 +222,15 @@ def build_documents(corpus: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 class VectorIndex:
     def __init__(self, embedding_model: str = EMBEDDING_MODEL):
-        # Delay heavy model initialization until actually needed. Some
-        # deployment environments (Streamlit Cloud) provide torch in a
-        # configuration that causes module.to(device) to raise
-        # NotImplementedError during construction. To avoid crashing the
-        # app at import/startup, keep embedder None and initialize lazily
-        # inside _embed() with a safe device fallback.
         self.embedding_model = embedding_model
-        self.embedder = None
-        self.index = None
+        self.embeddings = None
+        self.vectorstore = None
         self.docs: List[Dict[str, Any]] = []
 
-    def _embed(self, texts: List[str]) -> np.ndarray:
-        # Lazy-load the SentenceTransformer only when embeddings are needed.
-        if self.embedder is None:
+    def _get_embeddings(self):
+        if self.embeddings is None:
+            if HuggingFaceEmbeddings is None:
+                raise ImportError("LangChain HuggingFaceEmbeddings not available")
             device = "cpu"
             try:
                 import torch
@@ -229,41 +240,21 @@ class VectorIndex:
                     device = "mps"
             except Exception:
                 device = "cpu"
-
-            # Import SentenceTransformer lazily so environments that don't
-            # have sentence-transformers installed (runtime-minimal) can still
-            # start and perform FAISS-only queries when using precomputed index.
-            try:
-                from sentence_transformers import SentenceTransformer
-            except Exception as e:
-                raise RuntimeError(
-                    "The 'sentence_transformers' package is required to compute embeddings. "
-                    "Install 'sentence-transformers' or run this code against a precomputed FAISS index (no embedding step)."
-                ) from e
-
-            try:
-                # Pass device explicitly; if this fails, try a CPU-only load.
-                self.embedder = SentenceTransformer(self.embedding_model, device=device)
-            except Exception as e:
-                print(f"Warning: failed to load SentenceTransformer on device={device}: {e}. Falling back to CPU.")
-                try:
-                    self.embedder = SentenceTransformer(self.embedding_model, device="cpu")
-                except Exception as e2:
-                    raise RuntimeError(f"Could not load embedding model '{self.embedding_model}': {e2}") from e2
-
-        return self.embedder.encode(texts, show_progress_bar=False, normalize_embeddings=True)
+            self.embeddings = HuggingFaceEmbeddings(model_name=self.embedding_model, model_kwargs={'device': device}, encode_kwargs={'normalize_embeddings': True})
+        return self.embeddings
 
     def build(self, docs: List[Dict[str, Any]]):
+        if FAISS is None or Document is None:
+            raise ImportError("LangChain FAISS and Document not available")
         self.docs = docs
-        vectors = self._embed([d["text"] for d in docs]).astype("float32")
-        d = vectors.shape[1]
-        self.index = faiss.IndexFlatIP(d)
-        self.index.add(vectors)
+        for i, d in enumerate(docs):
+            d["index"] = i
+        langchain_docs = [Document(page_content=d["text"], metadata={"index": d["index"], **d["meta"]}) for d in docs]
+        embeddings = self._get_embeddings()
+        self.vectorstore = FAISS.from_documents(langchain_docs, embeddings)
 
     def search(self, query: str, top_k: int = TOP_K) -> List[Tuple[int, float]]:
-        # If no FAISS index is loaded, perform lexical fallback so the
-        # application can still search preloaded docs without heavy ML deps.
-        if self.index is None:
+        if self.vectorstore is None:
             # Lexical-overlap fallback (no embedding required)
             def normalize(s: str) -> str:
                 return "".join(c for c in unicodedata.normalize("NFKD", s.lower()) if not unicodedata.combining(c))
@@ -276,32 +267,22 @@ class VectorIndex:
                 d_tokens = set(d_norm.split())
                 if not q_tokens or not d_tokens:
                     continue
-                overlap = len(q_tokens & d_tokens)
-                score = float(overlap) / max(1, len(q_tokens))
+                # Use OR logic: score is fraction of query tokens present in doc
+                matched = sum(1 for q in q_tokens if q in d_tokens)
+                score = float(matched) / max(1, len(q_tokens)) * 0.5  # Scale to 0-0.5
                 if score > 0:
                     scored.append((idx, score))
 
             scored.sort(key=lambda x: x[1], reverse=True)
             return scored[:top_k]
 
-        # Try semantic search using the embedder. If embeddings cannot be
-        # computed because sentence-transformers (or torch) are missing in
-        # this runtime, fall back to a lightweight lexical-overlap search so
-        # the app can still respond using precomputed vectorstore/docs.
+        # Use LangChain FAISS
         try:
-            q = self._embed([query]).astype("float32")
-            scores, idxs = self.index.search(q, top_k)
-            results = []
-            for score, idx in zip(scores[0], idxs[0]):
-                if idx == -1:
-                    continue
-                results.append((int(idx), float(score)))
-            return results
-        except RuntimeError:
-            # Embedding model unavailable in this environment. Use a simple
-            # lexical-overlap scoring as a fallback. This is cheaper and
-            # doesn't require heavy ML packages but obviously isn't a
-            # semantic search substitute.
+            results = self.vectorstore.similarity_search_with_score(query, k=top_k)
+            return [(doc.metadata["index"], float(score)) for doc, score in results]
+        except Exception as e:
+            print(f"Error in semantic search: {e}. Falling back to lexical.")
+            # Fallback to lexical
             def normalize(s: str) -> str:
                 return "".join(c for c in unicodedata.normalize("NFKD", s.lower()) if not unicodedata.combining(c))
 
@@ -313,58 +294,53 @@ class VectorIndex:
                 d_tokens = set(d_norm.split())
                 if not q_tokens or not d_tokens:
                     continue
-                overlap = len(q_tokens & d_tokens)
-                # score = overlap fraction of query tokens present in the doc
-                score = float(overlap) / max(1, len(q_tokens))
+                matched = sum(1 for q in q_tokens if q in d_tokens)
+                score = float(matched) / max(1, len(q_tokens)) * 0.5  # Scale to 0-0.5
                 if score > 0:
                     scored.append((idx, score))
 
-            # Sort by score desc and return top_k
             scored.sort(key=lambda x: x[1], reverse=True)
             return scored[:top_k]
 
     def save(self, vs_dir: Path):
         vs_dir.mkdir(parents=True, exist_ok=True)
-        faiss.write_index(self.index, str(vs_dir / "faiss.index"))
+        if self.vectorstore:
+            self.vectorstore.save_local(str(vs_dir))
+        # Also save docs for compatibility
         with open(vs_dir / "docs.pkl", "wb") as f:
             pickle.dump(self.docs, f)
 
     def load(self, vs_dir: Path):
-        self.index = faiss.read_index(str(vs_dir / "faiss.index"))
-        with open(vs_dir / "docs.pkl", "rb") as f:
-            self.docs = pickle.load(f)
+        try:
+            embeddings = self._get_embeddings()
+            self.vectorstore = FAISS.load_local(str(vs_dir), embeddings, allow_dangerous_deserialization=True)
+            # Extract docs from docstore
+            self.docs = []
+            for doc_id, doc in self.vectorstore.docstore._dict.items():
+                meta = doc.metadata.copy()
+                index = meta.pop("index", len(self.docs))
+                self.docs.append({
+                    "id": doc_id,
+                    "text": doc.page_content,
+                    "meta": meta,
+                    "index": index
+                })
+            self.docs.sort(key=lambda x: x["index"])
+        except Exception as e:
+            print(f"Failed to load LangChain vectorstore: {e}. Loading docs from pickle.")
+            try:
+                with open(vs_dir / "docs.pkl", "rb") as f:
+                    self.docs = pickle.load(f)
+                self.vectorstore = None
+            except Exception as e2:
+                raise FileNotFoundError(f"Could not load vectorstore or docs: {e2}") from e2
 
 # ----------------- Re-Ranker -----------------
 
 class ReRanker:
     def __init__(self, model_name="cross-encoder/ms-marco-MiniLM-L-6-v2"):
-        # Pick a safe device for the CrossEncoder. Prefer CUDA/MPS when available,
-        # otherwise fall back to CPU. If loading the model fails for any reason
-        # (in constrained cloud runtimes), keep model=None so callers can skip
-        # reranking instead of crashing the app.
-        device = "cpu"
-        try:
-            import torch
-            if torch.cuda.is_available():
-                device = "cuda"
-            elif getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
-                device = "mps"
-        except Exception:
-            device = "cpu"
-
-        # Import CrossEncoder lazily to avoid requiring sentence-transformers in
-        # minimal runtime images that only need to search a prebuilt FAISS index.
-        try:
-            from sentence_transformers import CrossEncoder
-            try:
-                self.model = CrossEncoder(model_name, device=device)
-            except Exception as e:
-                print(f"Warning: failed to load CrossEncoder reranker on device={device}: {e}")
-                self.model = None
-        except Exception:
-            # sentence-transformers/CrossEncoder not installed in this environment.
-            print("Warning: sentence-transformers not installed; reranker disabled.")
-            self.model = None
+        # Do not load reranker model to avoid downloads
+        self.model = None
 
     def rerank(self, query: str, contexts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         if not contexts:
@@ -413,18 +389,8 @@ class Generator:
             )
             return resp.choices[0].message.content.strip()
         else:
-            # Lazy-load transformers tokenizer/model if they weren't loaded at init
-            if self.tokenizer is None or self.model is None:
-                try:
-                    from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
-                except Exception as e:
-                    raise RuntimeError("transformers is required for local generation") from e
-                self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-                self.model = AutoModelForSeq2SeqLM.from_pretrained(self.model_name)
-
-            inputs = self.tokenizer(prompt, return_tensors="pt", truncation=True)
-            outputs = self.model.generate(**inputs, max_new_tokens=max_new_tokens)
-            return self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+            # Do not load local model to avoid downloads
+            raise RuntimeError("Local generation not available")
 
 # ----------------- Prompt -----------------
 
@@ -483,7 +449,7 @@ class RAGPipeline:
 
 
     def ensure_loaded(self):
-        if not (self.vs_dir / "faiss.index").exists():
+        if not (self.vs_dir / "docs.pkl").exists():
             raise FileNotFoundError("Vector store not found. Run ingest.py first.")
         self.index.load(self.vs_dir)
 
@@ -525,6 +491,9 @@ class RAGPipeline:
             for i, d in enumerate(docs):
                 if norm_term in normalize(d["text"]):
                     lexical_idxs.append(i)
+        else:
+            # For non-date queries, also do lexical search to boost substring matches
+            lexical_idxs = _lexical_search_docs(docs, query, limit=50)
 
         # --------- Semantic FAISS search ----------
         faiss_results = self.index.search(query, top_k=50)
@@ -548,14 +517,8 @@ class RAGPipeline:
             if i in lexical_idxs:
                 score = 1.0 + base_sem_score  # lexical + any semantic relevance
             else:
-                # For semantic-only hits, scale FAISS cosine/dot scores into [0,1].
-                # When embeddings are normalized, FAISS returns cosine (in [-1,1]).
-                # Map that to [0,1] with a linear transform so UI thresholds work
-                # sensibly: score = 0.5 + 0.5 * base_sem_score.
-                raw = float(base_sem_score)
-                scaled = 0.5 + 0.5 * raw
-                # clamp to [0,1]
-                score = max(0.0, min(1.0, scaled))
+                # Use raw similarity score
+                score = max(0.0, float(base_sem_score))
 
             ctxs.append(docs[i] | {"score": score})
 
@@ -635,6 +598,7 @@ class RAGPipeline:
             if text.strip().startswith("Q:") and "A:" in text:
                 qna_parts = text.split("A:", 1)
                 if len(qna_parts) == 2:
+                    q = qna_parts[0].replace("Q:", "").strip()
                     ans = qna_parts[1].strip()
                     full_prompt = f"""
                     [FAQ Direct Match]
@@ -647,7 +611,7 @@ class RAGPipeline:
                     Extracted Answer: {ans}
                     """
                     return {
-                        "answer": f"{ans} [{i+1}]",
+                        "answer": f"Q: {q}\nA: {ans} [{i+1}]",
                         "contexts": top_contexts,
                         "prompt": full_prompt.strip(),
                         "mode": "faq",
@@ -782,33 +746,11 @@ class RAGPipeline:
             }
 
         # ------------------------------
-        # Fallback: local FLAN-T5
+        # Fallback: return top context without generation
         # ------------------------------
-        cited = "\n\n".join(
-            [f"[{i+1}] {c['text']} (Source: {c['meta']['source']})" for i, c in enumerate(top_contexts)]
-        )
-        prompt = f"""
-                    You are a precise assistant.
-                    Use ONLY the context below. Do not invent information.
-                    Return a clear sentence that answers the question AND include citations like [1], [2].
-                    If the answer is not explicit, say: "I could not find this in the documents."
-
-                    Question: {query}
-
-                    Context:
-                    {cited}
-
-                    Answer:"""
-
-        completion = self.generator.generate(prompt).strip()
-
-        # Guard against citation-only answers like "[1] [2]"
-        import re
-        if not completion or re.fullmatch(r"(?:\s*\[\d+\]\s*)+", completion):
-            completion = f"{top_contexts[0]['text']} [1]"
-            mode = "fallback"
-        else:
-            mode = "flan"
+        completion = top_contexts[0]['text']
+        prompt = f"Question: {query}\n\nTop context: {completion}"
+        mode = "lexical"
 
         return {
             "answer": completion,

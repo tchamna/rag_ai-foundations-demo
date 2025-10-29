@@ -1,7 +1,7 @@
 from pathlib import Path
 
 # Paths
-DATA_DIR = Path("data/docs")
+DATA_DIR = Path("data")
 VECTORSTORE_DIR = Path("vectorstore")
 
 # Models

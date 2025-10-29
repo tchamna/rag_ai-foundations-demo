@@ -1,22 +1,17 @@
 # RAG AI Foundations Demo
 
-This repository is a small Retrieval-Augmented Generation (RAG) demo that combines FAISS vector search, SentenceTransformers embeddings, and text generation (local FLAN-T5 or ChatGPT). It includes:
+This repository is a compact Retrieval-Augmented Generation (RAG) demo built around LangChain's FAISS vector search and a Streamlit UI. The app uses a precomputed FAISS index (in `vectorstore/`) to run in lightweight runtimes without heavy ML dependencies. When embeddings or generators are required at runtime, the code lazy-loads them, but production deployments should precompute the vectorstore.
 
-- A Streamlit dashboard (`src/app_streamlit.py`) for interactive Q&A and transcript downloads (XLSX).
-- A FastAPI backend and React frontend (in `frontend/`) for a separate web chat UI.
-# RAG AI Foundations Demo
-
-This repository is a compact Retrieval-Augmented Generation (RAG) demo built around FAISS vector search and a Streamlit UI. The app prefers using a precomputed FAISS index (in `vectorstore/`) so it can run in lightweight runtimes without heavy ML dependencies. When embeddings or generators are required at runtime the code will attempt to lazy-load them — but production deployments should precompute and commit the vector store instead of installing large ML packages.
-
-Contents
+## Contents
 - Streamlit dashboard: `src/app_streamlit.py` (interactive Q&A, transcript export)
 - RAG pipeline & ingestion: `src/rag_pipeline.py`, `src/ingest.py`, `src/precompute_embeddings.py`
 - Frontend: `frontend/` (separate React UI)
-- Precomputed vector store: `vectorstore/` (FAISS index + metadata)
+- Precomputed vector store: `vectorstore/` (LangChain FAISS index + metadata)
 
-This README contains a short quickstart. Full usage, deployment and architecture notes are in the `docs/` folder.
+This README contains a short quickstart. Full usage, deployment, and architecture notes are in the `docs/` folder.
 
-Quick local setup
+## Quick Local Setup
+
 1. Create and activate a virtual environment:
 
 ```powershell
@@ -24,31 +19,49 @@ python -m venv .venv
 .venv\Scripts\Activate.ps1
 ```
 
-2. Install runtime requirements (this project keeps ML-heavy packages out of `requirements.txt` by default; add them only if you need on-demand embedding/generation):
+2. Install runtime requirements (ML packages are optional for precomputed vectorstores):
 
 ```powershell
 pip install -r requirements.txt
 ```
 
-3. (Optional) Precompute the vectorstore locally and commit it to the repo (recommended for cloud deploys):
+3. (Optional) Precompute the vectorstore locally and commit it (recommended for cloud deploys):
 
 ```powershell
-python src/precompute_embeddings.py --data_dir data/docs --vs_dir vectorstore
+python src/precompute_embeddings.py
 ```
 
-4. Run the Streamlit app (the repo uses `app.py` as the Streamlit entrypoint):
+4. Run the Streamlit app:
 
 ```powershell
-streamlit run app.py --server.port 8501
+streamlit run src/app_streamlit.py
 ```
 
-If your shell requires the module form:
+## What to Do in the App
+- Upload documents via the sidebar (supported: .txt, .csv, .xlsx).
+- Rebuild the vectorstore from the sidebar if you upload new docs.
+- Ask questions in the main panel. The app shows retrieved passages with citations.
+- Download transcripts (XLSX or CSV fallback).
 
-```powershell
-python -m streamlit run app.py
-```
+## Important Runtime Notes
+- Designed for offline use with precomputed `vectorstore/`. Falls back to lexical search if embeddings fail.
+- Health banner shows vectorstore and package status.
+- Uses LangChain for vectorstore management, with lazy loading for embeddings.
 
-What to do in the app
+## Where to Find More Documentation
+- `docs/USAGE.md` — extended usage and examples
+- `docs/DEPLOY_AZURE.md` — Azure deployment instructions
+- `docs/ARCHITECTURE.md` — design and components
+
+## Contributing
+- Include `vectorstore/` in deployments for offline functionality.
+
+## Troubleshooting
+- Missing `sentence_transformers`? Precompute vectorstore or add to requirements.
+- Issues with `openpyxl`? Check for conflicting `xml` package.
+
+License & attribution
+- Repo owner: Shck Tchamna
 - Upload documents via the sidebar (supported: .txt, .csv, .xlsx).
 - If you uploaded new documents, rebuild the vector store from the sidebar.
 - Ask questions in the main panel. The app will show retrieved passages and citations.
