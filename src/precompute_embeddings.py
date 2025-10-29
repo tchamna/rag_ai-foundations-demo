@@ -1,6 +1,12 @@
 from pathlib import Path
 import sys
 
+# Ensure repository root is on sys.path so imports like `from src.rag_pipeline` work
+# whether script is launched from the repo root or from inside `src/`.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 try:
     from src.rag_pipeline import load_corpus, build_documents, VectorIndex
     from src.config import DATA_DIR, VECTORSTORE_DIR
