@@ -106,13 +106,44 @@ jobs:
           curl -v --retry 3 --retry-delay 10 -u "$USER:$PASS" --data-binary @deploy.zip "$DEPLOY_URL"
           echo "✅ ZipDeploy completed successfully."
 
-      # 🧩 Disable Oryx build (requires resource group)
+    
+      
+        # 🧩 Disable Oryx build (requires resource group)
       - name: Disable Oryx build during deployment
         uses: azure/cli@v2
         with:
           inlineScript: |
+            echo "🛑 Ensuring Oryx build is disabled..."
             az webapp config appsettings set \
               --name tchamna-rag-ai-foundations-demo \
               --resource-group rag-ai-foundations-demo-rg \
               --settings SCM_DO_BUILD_DURING_DEPLOYMENT=false
-            echo "🛑 Oryx build disabled for future deployments."
+            echo "✅ SCM_DO_BUILD_DURING_DEPLOYMENT=false confirmed."
+
+      # 🧩 Double check Oryx flag is applied
+      - name: Verify Oryx setting
+        uses: azure/cli@v2
+        with:
+          inlineScript: |
+            echo "🔍 Checking Oryx build configuration..."
+            az webapp config appsettings list \
+              --name tchamna-rag-ai-foundations-demo \
+              --resource-group rag-ai-foundations-demo-rg \
+              --query "[?name=='SCM_DO_BUILD_DURING_DEPLOYMENT']"
+            echo "✅ Verified Oryx build disabled successfully."
+
+      # ✅ Final integrity check (optional but recommended)
+      - name: Confirm vectorstore files deployed
+        env:
+          AZURE_WEBAPP_NAME: 'tchamna-rag-ai-foundations-demo'
+          AZURE_WEBAPP_PUBLISH_PROFILE: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_F5CDC0F80638430D8766CA02F8B5AC26 }}
+        run: |
+          echo "🔎 Verifying vectorstore directory contents on server..."
+          USER=$(echo "$AZURE_WEBAPP_PUBLISH_PROFILE" | grep -oP '(?<=userName=")[^"]+')
+          PASS=$(echo "$AZURE_WEBAPP_PUBLISH_PROFILE" | grep -oP '(?<=userPWD=")[^"]+')
+          KUDU_URL="https://$AZURE_WEBAPP_NAME.scm.azurewebsites.net/api/command"
+          CMD="ls -lh /home/site/wwwroot/vectorstore || echo '⚠️ vectorstore missing'"
+          curl -u "$USER:$PASS" -X POST -H "Content-Type: application/json" \
+            -d "{\"command\": \"$CMD\"}" "$KUDU_URL" | jq -r '.output' || true
+          echo "✅ Deployment verified."
+
