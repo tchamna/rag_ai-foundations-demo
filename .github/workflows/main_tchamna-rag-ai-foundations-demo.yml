@@ -69,14 +69,14 @@ jobs:
             echo "ℹ️ No changes detected in vectorstore/"
           fi
 
-      # 🧹 Conditional cleanup using Kudu API
-      - name: Clean existing files in Azure Web App (only if vectorstore changed)
+      # 🧹 Conditional cleanup using Kudu API (if vectorstore changed)
+      - name: Clean existing files in Azure Web App
         if: env.vectorstore_changed == 'true'
         env:
           AZURE_WEBAPP_NAME: 'tchamna-rag-ai-foundations-demo'
           AZURE_WEBAPP_PUBLISH_PROFILE: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_F5CDC0F80638430D8766CA02F8B5AC26 }}
         run: |
-          echo "🧹 Vectorstore updated — cleaning /home/site/wwwroot via Kudu API..."
+          echo "🧹 Cleaning /home/site/wwwroot via Kudu API..."
           USER=$(echo $AZURE_WEBAPP_PUBLISH_PROFILE | grep -oP '(?<=userName=")[^"]+')
           PASS=$(echo $AZURE_WEBAPP_PUBLISH_PROFILE | grep -oP '(?<=userPWD=")[^"]+')
           KUDU_URL="https://$AZURE_WEBAPP_NAME.scm.azurewebsites.net/api/command"
@@ -85,14 +85,14 @@ jobs:
             -d "{\"command\": \"$CMD\"}" $KUDU_URL
           echo "✅ Cleanup complete."
 
-      # 🧾 Optional: verify cleanup (prints file list)
+      # 🧾 Optional: verify cleanup
       - name: Verify cleanup (optional)
         if: env.vectorstore_changed == 'true'
         env:
           AZURE_WEBAPP_NAME: 'tchamna-rag-ai-foundations-demo'
           AZURE_WEBAPP_PUBLISH_PROFILE: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_F5CDC0F80638430D8766CA02F8B5AC26 }}
         run: |
-          echo "🔍 Verifying /home/site/wwwroot is empty..."
+          echo "🔍 Checking /home/site/wwwroot after cleanup..."
           USER=$(echo $AZURE_WEBAPP_PUBLISH_PROFILE | grep -oP '(?<=userName=")[^"]+')
           PASS=$(echo $AZURE_WEBAPP_PUBLISH_PROFILE | grep -oP '(?<=userPWD=")[^"]+')
           KUDU_URL="https://$AZURE_WEBAPP_NAME.scm.azurewebsites.net/api/command"
@@ -100,10 +100,32 @@ jobs:
           curl -s -u $USER:$PASS -X POST -H "Content-Type: application/json" \
             -d "{\"command\": \"$CMD\"}" $KUDU_URL
 
-      # 🚀 Deploy to Azure Web App
-      - name: Deploy to Azure Web App
-        uses: azure/webapps-deploy@v3
-        id: deploy-to-webapp
+      # 📦 Force include vectorstore before zipping
+      - name: Ensure vectorstore included
+        run: |
+          echo "Ensuring vectorstore folder is present before packaging..."
+          ls -R vectorstore/ || echo "⚠️ vectorstore folder missing!"
+
+      # 🚀 Manual ZipDeploy (bypasses Oryx)
+      - name: Deploy to Azure via ZipDeploy
+        env:
+          AZURE_WEBAPP_NAME: 'tchamna-rag-ai-foundations-demo'
+          AZURE_WEBAPP_PUBLISH_PROFILE: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_F5CDC0F80638430D8766CA02F8B5AC26 }}
+        run: |
+          echo "🚀 Starting ZipDeploy to Azure..."
+          zip -r deploy.zip .
+          USER=$(echo $AZURE_WEBAPP_PUBLISH_PROFILE | grep -oP '(?<=userName=")[^"]+')
+          PASS=$(echo $AZURE_WEBAPP_PUBLISH_PROFILE | grep -oP '(?<=userPWD=")[^"]+')
+          DEPLOY_URL="https://$AZURE_WEBAPP_NAME.scm.azurewebsites.net/api/zipdeploy"
+          curl -s -u $USER:$PASS --data-binary @deploy.zip $DEPLOY_URL
+          echo "✅ ZipDeploy completed successfully."
+
+      # 🧩 Disable Oryx build (for safety)
+      - name: Disable Oryx build during deployment
+        uses: azure/cli@v2
         with:
-          app-name: 'tchamna-rag-ai-foundations-demo'
-          slot-name: 'Production'
+          inlineScript: |
+            az webapp config appsettings set \
+              --name tchamna-rag-ai-foundations-demo \
+              --settings SCM_DO_BUILD_DURING_DEPLOYMENT=false
+            echo "🛑 Oryx build disabled for future deployments."
