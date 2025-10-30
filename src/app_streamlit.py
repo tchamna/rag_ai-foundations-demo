@@ -117,7 +117,7 @@ def _check_runtime_health():
     vs_ok = False
     try:
         vs_path = Path(VECTORSTORE_DIR)
-        vs_ok = (vs_path / "faiss.index").exists() and (vs_path / "docs.pkl").exists()
+        vs_ok = (vs_path / "index.faiss").exists() and (vs_path / "index.pkl").exists() and (vs_path / "docs.pkl").exists()
     except Exception:
         vs_ok = False
 
@@ -147,7 +147,7 @@ if not st.session_state['runtime_banner_hidden']:
         col_a, col_b = st.columns([3, 1])
         with col_a:
             if _vs_ok:
-                st.success("Vectorstore: precomputed index found (faiss.index + docs.pkl)")
+                st.success("Vectorstore: precomputed index found (index.faiss + index.pkl + docs.pkl)")
             else:
                 st.error("Vectorstore: NOT found. Run `python src/precompute_embeddings.py` and commit `vectorstore/` or rebuild index via sidebar.")
         with col_b:

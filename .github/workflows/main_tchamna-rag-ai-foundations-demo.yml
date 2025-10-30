@@ -55,8 +55,12 @@ jobs:
             !__pycache__/
 
   deploy:
+    name: Deploy to Azure (Production)
     runs-on: ubuntu-latest
     needs: build
+    environment:
+      name: production
+      url: https://tchamna-rag-ai-foundations-demo.azurewebsites.net
     permissions:
       id-token: write
       contents: read
@@ -74,7 +78,7 @@ jobs:
           tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_8C6CEF7FC8E740869F9990AB93966567 }}
           subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_9D8C22EDA8A44F3DB8253C2A2661E4B9 }}
 
-      # 🧠 Detect if vectorstore or output.tar.gz changed
+      # 🧠 Detect if vectorstore or output changed
       - name: Check if vectorstore or output changed
         id: change_check
         run: |
@@ -102,20 +106,21 @@ jobs:
             -d "{\"command\": \"$CMD\"}" "$KUDU_URL"
           echo "✅ Cleanup complete."
 
-      # 🚀 Deploy using ZipDeploy (force clean, overwrite)
-      - name: Deploy to Azure via ZipDeploy
+      # 🚀 Deploy to Azure (Production slot)
+      - name: Deploy to Azure via ZipDeploy (Production)
         env:
           AZURE_WEBAPP_NAME: 'tchamna-rag-ai-foundations-demo'
+          AZURE_SLOT_NAME: 'Production'
           AZURE_WEBAPP_PUBLISH_PROFILE: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_F5CDC0F80638430D8766CA02F8B5AC26 }}
         run: |
-          echo "🚀 Starting ZipDeploy to Azure..."
+          echo "🚀 Starting ZipDeploy to Azure Production..."
           zip -r deploy.zip .
           USER=$(echo "$AZURE_WEBAPP_PUBLISH_PROFILE" | grep -oP '(?<=userName=")[^"]+')
           PASS=$(echo "$AZURE_WEBAPP_PUBLISH_PROFILE" | grep -oP '(?<=userPWD=")[^"]+')
-          DEPLOY_URL="https://$AZURE_WEBAPP_NAME.scm.azurewebsites.net/api/zipdeploy?isAsync=true&clean=true"
+          DEPLOY_URL="https://$AZURE_WEBAPP_NAME.scm.azurewebsites.net/api/zipdeploy?isAsync=true&clean=true&slot=$AZURE_SLOT_NAME"
           echo "Uploading to $DEPLOY_URL ..."
           curl -v --retry 3 --retry-delay 10 -u "$USER:$PASS" --data-binary @deploy.zip "$DEPLOY_URL"
-          echo "✅ ZipDeploy completed successfully."
+          echo "✅ ZipDeploy completed successfully on Production slot."
 
       # 🔍 Verify presence of output.tar.gz and vectorstore on Azure
       - name: Verify deployed files
@@ -139,5 +144,6 @@ jobs:
             az webapp config appsettings set \
               --name tchamna-rag-ai-foundations-demo \
               --resource-group rag-ai-foundations-demo-rg \
+              --slot Production \
               --settings SCM_DO_BUILD_DURING_DEPLOYMENT=false
-            echo "🛑 Oryx build disabled for future deployments."
+            echo "🛑 Oryx build disabled for Production slot."
