@@ -113,6 +113,6 @@ jobs:
           inlineScript: |
             az webapp config appsettings set \
               --name tchamna-rag-ai-foundations-demo \
-              --resource-group <YOUR_RESOURCE_GROUP_NAME> \
+              --resource-group rag-ai-foundations-demo-rg \
               --settings SCM_DO_BUILD_DURING_DEPLOYMENT=false
             echo "🛑 Oryx build disabled for future deployments."
