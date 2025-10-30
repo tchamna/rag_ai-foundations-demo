@@ -26,12 +26,29 @@ jobs:
           source antenv/bin/activate
           pip install -r requirements.txt
 
+      # 🧩 Ensure output.tar.gz and vectorstore are included
+      - name: Verify important files exist
+        run: |
+          echo "Checking for output.tar.gz and vectorstore/"
+          ls -lh output.tar.gz || echo "⚠️ output.tar.gz missing!"
+          ls -R vectorstore/ || echo "⚠️ vectorstore folder missing!"
+
+      # 🕒 Force-update timestamp to ensure redeploy
+      - name: Force-update file timestamps
+        run: |
+          if [ -f output.tar.gz ]; then
+            touch -m output.tar.gz
+            echo "🕒 Refreshed timestamp for output.tar.gz"
+          fi
+
+      # 📦 Upload artifact for deployment
       - name: Upload artifact for deployment jobs
         uses: actions/upload-artifact@v4
         with:
           name: python-app
           path: |
             .
+            output.tar.gz
             !antenv/
             !.git/
             !.github/
@@ -57,20 +74,20 @@ jobs:
           tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_8C6CEF7FC8E740869F9990AB93966567 }}
           subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_9D8C22EDA8A44F3DB8253C2A2661E4B9 }}
 
-      # 🧠 Detect if vectorstore folder changed
-      - name: Check if vectorstore folder changed
-        id: vectorstore_check
+      # 🧠 Detect if vectorstore or output.tar.gz changed
+      - name: Check if vectorstore or output changed
+        id: change_check
         run: |
-          if git diff --name-only HEAD~1 HEAD | grep -q '^vectorstore/'; then
+          if git diff --name-only HEAD~1 HEAD | grep -Eq '^(vectorstore/|output\.tar\.gz)'; then
             echo "vectorstore_changed=true" >> $GITHUB_ENV
-            echo "✅ Detected changes in vectorstore/"
+            echo "✅ Detected changes in vectorstore or output.tar.gz"
           else
             echo "vectorstore_changed=false" >> $GITHUB_ENV
-            echo "ℹ️ No changes detected in vectorstore/"
+            echo "ℹ️ No changes detected in vectorstore or output.tar.gz"
           fi
 
-      # 🧹 Clean existing files via Kudu API if vectorstore changed
-      - name: Clean existing files in Azure Web App
+      # 🧹 Clean existing files in Azure Web App (Kudu API)
+      - name: Clean existing files
         if: env.vectorstore_changed == 'true'
         env:
           AZURE_WEBAPP_NAME: 'tchamna-rag-ai-foundations-demo'
@@ -85,13 +102,7 @@ jobs:
             -d "{\"command\": \"$CMD\"}" "$KUDU_URL"
           echo "✅ Cleanup complete."
 
-      # 📦 Ensure vectorstore included before zipping
-      - name: Ensure vectorstore included
-        run: |
-          echo "Ensuring vectorstore folder is present before packaging..."
-          ls -R vectorstore/ || echo "⚠️ vectorstore folder missing!"
-
-      # 🚀 Manual ZipDeploy (bypasses Oryx)
+      # 🚀 Deploy using ZipDeploy (force clean, overwrite)
       - name: Deploy to Azure via ZipDeploy
         env:
           AZURE_WEBAPP_NAME: 'tchamna-rag-ai-foundations-demo'
@@ -101,49 +112,32 @@ jobs:
           zip -r deploy.zip .
           USER=$(echo "$AZURE_WEBAPP_PUBLISH_PROFILE" | grep -oP '(?<=userName=")[^"]+')
           PASS=$(echo "$AZURE_WEBAPP_PUBLISH_PROFILE" | grep -oP '(?<=userPWD=")[^"]+')
-          DEPLOY_URL="https://$AZURE_WEBAPP_NAME.scm.azurewebsites.net/api/zipdeploy"
+          DEPLOY_URL="https://$AZURE_WEBAPP_NAME.scm.azurewebsites.net/api/zipdeploy?isAsync=true&clean=true"
           echo "Uploading to $DEPLOY_URL ..."
           curl -v --retry 3 --retry-delay 10 -u "$USER:$PASS" --data-binary @deploy.zip "$DEPLOY_URL"
           echo "✅ ZipDeploy completed successfully."
 
-    
-      
-        # 🧩 Disable Oryx build (requires resource group)
-      - name: Disable Oryx build during deployment
-        uses: azure/cli@v2
-        with:
-          inlineScript: |
-            echo "🛑 Ensuring Oryx build is disabled..."
-            az webapp config appsettings set \
-              --name tchamna-rag-ai-foundations-demo \
-              --resource-group rag-ai-foundations-demo-rg \
-              --settings SCM_DO_BUILD_DURING_DEPLOYMENT=false
-            echo "✅ SCM_DO_BUILD_DURING_DEPLOYMENT=false confirmed."
-
-      # 🧩 Double check Oryx flag is applied
-      - name: Verify Oryx setting
-        uses: azure/cli@v2
-        with:
-          inlineScript: |
-            echo "🔍 Checking Oryx build configuration..."
-            az webapp config appsettings list \
-              --name tchamna-rag-ai-foundations-demo \
-              --resource-group rag-ai-foundations-demo-rg \
-              --query "[?name=='SCM_DO_BUILD_DURING_DEPLOYMENT']"
-            echo "✅ Verified Oryx build disabled successfully."
-
-      # ✅ Final integrity check (optional but recommended)
-      - name: Confirm vectorstore files deployed
+      # 🔍 Verify presence of output.tar.gz and vectorstore on Azure
+      - name: Verify deployed files
         env:
           AZURE_WEBAPP_NAME: 'tchamna-rag-ai-foundations-demo'
           AZURE_WEBAPP_PUBLISH_PROFILE: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_F5CDC0F80638430D8766CA02F8B5AC26 }}
         run: |
-          echo "🔎 Verifying vectorstore directory contents on server..."
+          echo "🔍 Checking deployed files in /home/site/wwwroot..."
           USER=$(echo "$AZURE_WEBAPP_PUBLISH_PROFILE" | grep -oP '(?<=userName=")[^"]+')
           PASS=$(echo "$AZURE_WEBAPP_PUBLISH_PROFILE" | grep -oP '(?<=userPWD=")[^"]+')
           KUDU_URL="https://$AZURE_WEBAPP_NAME.scm.azurewebsites.net/api/command"
-          CMD="ls -lh /home/site/wwwroot/vectorstore || echo '⚠️ vectorstore missing'"
+          CMD="ls -lh /home/site/wwwroot | grep -E 'output.tar.gz|vectorstore'"
           curl -u "$USER:$PASS" -X POST -H "Content-Type: application/json" \
-            -d "{\"command\": \"$CMD\"}" "$KUDU_URL" | jq -r '.output' || true
-          echo "✅ Deployment verified."
+            -d "{\"command\": \"$CMD\"}" "$KUDU_URL"
 
+      # 🧩 Disable Oryx (ensure Azure doesn’t rebuild)
+      - name: Disable Oryx build during deployment
+        uses: azure/cli@v2
+        with:
+          inlineScript: |
+            az webapp config appsettings set \
+              --name tchamna-rag-ai-foundations-demo \
+              --resource-group rag-ai-foundations-demo-rg \
+              --settings SCM_DO_BUILD_DURING_DEPLOYMENT=false
+            echo "🛑 Oryx build disabled for future deployments."
