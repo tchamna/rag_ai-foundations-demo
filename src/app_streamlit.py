@@ -264,6 +264,14 @@ col1, col2 = st.columns([2, 1])
 with col1:
     st.subheader("Chat — ask a question")
 
+    with st.expander("💡 Sample Questions", expanded=False):
+        st.markdown("Try asking one of these to get started:")
+        st.markdown("- What are the banking fees?")
+        st.markdown("- How do I open a new account?")
+        st.markdown("- What is the privacy policy?")
+        st.markdown("- How do I report a lost card?")
+        st.markdown("- What services do you offer?")
+
     # Prepare session state for chat messages and input
     if "chat_input" not in st.session_state:
         st.session_state["chat_input"] = ""
@@ -391,10 +399,7 @@ with col1:
     # Input box that submits on Enter via on_change
     # Provide a collapsed (hidden) label to avoid Streamlit's empty-label
     # accessibility warning which may become an exception in future versions.
-    # Single-line input with inline buttons in the same row to mimic ChatGPT
-    input_col, btn_col = st.columns([8, 2])
-    with input_col:
-        st.text_input("Chat input", key="chat_input", placeholder="Type a message and press Enter", on_change=handle_submit, label_visibility="collapsed")
+    st.text_input("Chat input", key="chat_input", placeholder="Type a message and press Enter", on_change=handle_submit, label_visibility="collapsed")
 
     # Helper to submit with optional ChatGPT override
     def submit_with_flag(flag=None):
@@ -404,11 +409,13 @@ with col1:
             st.session_state["chat_use_chatgpt_override"] = flag
         handle_submit()
 
-    with btn_col:
-        # Place Send and ChatGPT buttons inline next to the input field
-        # Disabled by default — enable when you want interactive sending
+    # Place Send and ChatGPT buttons inline next to the input field
+    # Disabled by default — enable when you want interactive sending
+    col_btn1, col_btn2 = st.columns([9, 1])
+    with col_btn1:
         if st.button("➤", disabled=True):
             submit_with_flag(None)
+    with col_btn2:
         if st.button("🤖", disabled=True):
             submit_with_flag(True)
 
