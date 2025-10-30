@@ -117,7 +117,7 @@ jobs:
           USER=$(echo $AZURE_WEBAPP_PUBLISH_PROFILE | grep -oP '(?<=userName=")[^"]+')
           PASS=$(echo $AZURE_WEBAPP_PUBLISH_PROFILE | grep -oP '(?<=userPWD=")[^"]+')
           DEPLOY_URL="https://$AZURE_WEBAPP_NAME.scm.azurewebsites.net/api/zipdeploy"
-          curl -s -u $USER:$PASS --data-binary @deploy.zip $DEPLOY_URL
+          curl -v -u $USER:$PASS --data-binary @deploy.zip $DEPLOY_URL
           echo "✅ ZipDeploy completed successfully."
 
       # 🧩 Disable Oryx build (for safety)
