@@ -57,19 +57,51 @@ jobs:
           tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_8C6CEF7FC8E740869F9990AB93966567 }}
           subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_9D8C22EDA8A44F3DB8253C2A2661E4B9 }}
 
-      # 🧹 NEW: Clean wwwroot before deploying (no resource group reference)
-      - name: Clean existing files in Azure Web App
-        uses: azure/cli@v2
-        with:
-          inlineScript: |
-            echo "Cleaning /home/site/wwwroot on Azure App Service..."
-            az webapp ssh \
-              --name tchamna-rag-ai-foundations-demo \
-              --command "rm -rf /home/site/wwwroot/* || true"
-            echo "Clean complete."
+      # 🧠 Detect if vectorstore folder changed
+      - name: Check if vectorstore folder changed
+        id: vectorstore_check
+        run: |
+          if git diff --name-only HEAD~1 HEAD | grep -q '^vectorstore/'; then
+            echo "vectorstore_changed=true" >> $GITHUB_ENV
+            echo "✅ Detected changes in vectorstore/"
+          else
+            echo "vectorstore_changed=false" >> $GITHUB_ENV
+            echo "ℹ️ No changes detected in vectorstore/"
+          fi
+
+      # 🧹 Conditional cleanup using Kudu API
+      - name: Clean existing files in Azure Web App (only if vectorstore changed)
+        if: env.vectorstore_changed == 'true'
+        env:
+          AZURE_WEBAPP_NAME: 'tchamna-rag-ai-foundations-demo'
+          AZURE_WEBAPP_PUBLISH_PROFILE: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_F5CDC0F80638430D8766CA02F8B5AC26 }}
+        run: |
+          echo "🧹 Vectorstore updated — cleaning /home/site/wwwroot via Kudu API..."
+          USER=$(echo $AZURE_WEBAPP_PUBLISH_PROFILE | grep -oP '(?<=userName=")[^"]+')
+          PASS=$(echo $AZURE_WEBAPP_PUBLISH_PROFILE | grep -oP '(?<=userPWD=")[^"]+')
+          KUDU_URL="https://$AZURE_WEBAPP_NAME.scm.azurewebsites.net/api/command"
+          CMD="rm -rf /home/site/wwwroot/*"
+          curl -s -u $USER:$PASS -X POST -H "Content-Type: application/json" \
+            -d "{\"command\": \"$CMD\"}" $KUDU_URL
+          echo "✅ Cleanup complete."
+
+      # 🧾 Optional: verify cleanup (prints file list)
+      - name: Verify cleanup (optional)
+        if: env.vectorstore_changed == 'true'
+        env:
+          AZURE_WEBAPP_NAME: 'tchamna-rag-ai-foundations-demo'
+          AZURE_WEBAPP_PUBLISH_PROFILE: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_F5CDC0F80638430D8766CA02F8B5AC26 }}
+        run: |
+          echo "🔍 Verifying /home/site/wwwroot is empty..."
+          USER=$(echo $AZURE_WEBAPP_PUBLISH_PROFILE | grep -oP '(?<=userName=")[^"]+')
+          PASS=$(echo $AZURE_WEBAPP_PUBLISH_PROFILE | grep -oP '(?<=userPWD=")[^"]+')
+          KUDU_URL="https://$AZURE_WEBAPP_NAME.scm.azurewebsites.net/api/command"
+          CMD="ls -la /home/site/wwwroot"
+          curl -s -u $USER:$PASS -X POST -H "Content-Type: application/json" \
+            -d "{\"command\": \"$CMD\"}" $KUDU_URL
 
       # 🚀 Deploy to Azure Web App
-      - name: 'Deploy to Azure Web App'
+      - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
         id: deploy-to-webapp
         with:
