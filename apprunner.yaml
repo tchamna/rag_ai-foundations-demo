@@ -1,0 +1,18 @@
+version: 1.0
+runtime: python311
+build:
+  commands:
+    pre-build:
+      - echo "Installing dependencies without PyTorch extras..."
+      - pip install --upgrade pip
+      - pip install streamlit pandas numpy openpyxl scikit-learn faker
+      - pip install langchain langchain-community langchain-huggingface python-multipart
+      - pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision torchaudio
+      - pip install faiss-cpu sentence-transformers
+    build:
+      - echo "Build completed successfully"
+run:
+  runtime-version: 3.11.5
+  command: streamlit run src/app_streamlit.py --server.port=8080 --server.address=0.0.0.0 --server.headless=true
+  network:
+    port: 8080
