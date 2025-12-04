@@ -68,12 +68,38 @@ jobs:
               --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
             
             echo "✅ ecsTaskExecutionRole created"
-            
-            # Wait for role to propagate
-            sleep 10
           else
             echo "✅ ecsTaskExecutionRole already exists"
           fi
+          
+          # Add CloudWatch Logs permissions
+          echo "Adding CloudWatch Logs permissions..."
+          cat > logs-policy.json << 'EOF'
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "logs:CreateLogGroup",
+                  "logs:CreateLogStream",
+                  "logs:PutLogEvents"
+                ],
+                "Resource": "*"
+              }
+            ]
+          }
+          EOF
+          
+          aws iam put-role-policy \
+            --role-name ecsTaskExecutionRole \
+            --policy-name CloudWatchLogsPolicy \
+            --policy-document file://logs-policy.json
+          
+          echo "✅ CloudWatch Logs permissions added"
+          
+          # Wait for permissions to propagate
+          sleep 10
 
       - name: Create ECS cluster if not exists
         run: |
