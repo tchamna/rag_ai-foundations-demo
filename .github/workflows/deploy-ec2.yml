@@ -15,7 +15,7 @@ env:
   EC2_USER: ${{ secrets.EC2_USER }}
   CONTAINER_NAME: rag-ai-app
   CONTAINER_PORT: 8080
-  HOST_PORT: 80
+  HOST_PORT: 8080
 
 jobs:
   deploy:
@@ -86,12 +86,13 @@ jobs:
           echo "Waiting 10 seconds for container to start..."
           sleep 10
           
-          echo "Checking application health..."
-          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" http://${{ env.EC2_HOST }} || echo "000")
+          echo "Checking application health on port 8080..."
+          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" http://${{ env.EC2_HOST }}:8080 || echo "000")
           
           if [ "$RESPONSE" = "200" ] || [ "$RESPONSE" = "302" ]; then
             echo "✅ Application is responding (HTTP $RESPONSE)"
-            echo "🌐 Access your app at: http://${{ env.EC2_HOST }}"
+            echo "🌐 Access your app at: http://${{ env.EC2_HOST }}:8080"
+            echo "📝 Note: If Nginx is configured, use http://${{ env.EC2_HOST }} (port 80)"
           else
             echo "⚠️ Application returned HTTP $RESPONSE"
             echo "Check the EC2 instance logs for details"
@@ -110,3 +111,5 @@ jobs:
           echo "**Container:** \`${{ env.CONTAINER_NAME }}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Port Mapping:** \`${{ env.HOST_PORT }}:${{ env.CONTAINER_PORT }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Note:** Container runs on port 8080. Use Nginx on port 80 for production." >> $GITHUB_STEP_SUMMARY
