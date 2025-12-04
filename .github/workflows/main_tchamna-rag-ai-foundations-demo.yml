@@ -18,27 +18,27 @@ jobs:
       - name: Set up Python version
         uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
+          python-version: '3.10'
 
       - name: Create and start virtual environment, install dependencies
         run: |
           python -m venv antenv
           source antenv/bin/activate
+          pip install --upgrade pip
           pip install -r light_requirements.txt
 
-      # 🧩 Ensure output.tar.gz and vectorstore are included
+      # 🧩 Ensure vectorstore is included
       - name: Verify important files exist
         run: |
-          echo "Checking for output.tar.gz and vectorstore/"
-          ls -lh output.tar.gz || echo "⚠️ output.tar.gz missing!"
+          echo "Checking for vectorstore/"
           ls -R vectorstore/ || echo "⚠️ vectorstore folder missing!"
 
       # 🕒 Force-update timestamp to ensure redeploy
       - name: Force-update file timestamps
         run: |
-          if [ -f output.tar.gz ]; then
-            touch -m output.tar.gz
-            echo "🕒 Refreshed timestamp for output.tar.gz"
+          if [ -d vectorstore ]; then
+            touch -m vectorstore/
+            echo "🕒 Refreshed timestamp for vectorstore"
           fi
 
       # 📦 Upload artifact for deployment
@@ -48,7 +48,6 @@ jobs:
           name: python-app
           path: |
             .
-            output.tar.gz
             !antenv/
             !.git/
             !.github/
@@ -74,16 +73,16 @@ jobs:
           tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_8C6CEF7FC8E740869F9990AB93966567 }}
           subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_9D8C22EDA8A44F3DB8253C2A2661E4B9 }}
 
-      # 🧠 Detect if vectorstore or output.tar.gz changed
-      - name: Check if vectorstore or output changed
+      # 🧠 Detect if vectorstore changed
+      - name: Check if vectorstore changed
         id: change_check
         run: |
-          if git diff --name-only HEAD~1 HEAD | grep -Eq '^(vectorstore/|output\.tar\.gz)'; then
+          if git diff --name-only HEAD~1 HEAD | grep -Eq '^vectorstore/'; then
             echo "vectorstore_changed=true" >> $GITHUB_ENV
-            echo "✅ Detected changes in vectorstore or output.tar.gz"
+            echo "✅ Detected changes in vectorstore"
           else
             echo "vectorstore_changed=false" >> $GITHUB_ENV
-            echo "ℹ️ No changes detected in vectorstore or output.tar.gz"
+            echo "ℹ️ No changes detected in vectorstore"
           fi
 
       # 🧹 Clean existing files in Azure Web App (Kudu API)
@@ -117,7 +116,7 @@ jobs:
           curl -v --retry 3 --retry-delay 10 -u "$USER:$PASS" --data-binary @deploy.zip "$DEPLOY_URL"
           echo "✅ ZipDeploy completed successfully."
 
-      # 🔍 Verify presence of output.tar.gz and vectorstore on Azure
+      # 🔍 Verify presence of vectorstore on Azure
       - name: Verify deployed files
         env:
           AZURE_WEBAPP_NAME: 'tchamna-rag-ai-foundations-demo'
@@ -127,7 +126,7 @@ jobs:
           USER=$(echo "$AZURE_WEBAPP_PUBLISH_PROFILE" | grep -oP '(?<=userName=")[^"]+')
           PASS=$(echo "$AZURE_WEBAPP_PUBLISH_PROFILE" | grep -oP '(?<=userPWD=")[^"]+')
           KUDU_URL="https://$AZURE_WEBAPP_NAME.scm.azurewebsites.net/api/command"
-          CMD="ls -lh /home/site/wwwroot | grep -E 'output.tar.gz|vectorstore'"
+          CMD="ls -lh /home/site/wwwroot | grep -E 'vectorstore'"
           curl -u "$USER:$PASS" -X POST -H "Content-Type: application/json" \
             -d "{\"command\": \"$CMD\"}" "$KUDU_URL"
 
