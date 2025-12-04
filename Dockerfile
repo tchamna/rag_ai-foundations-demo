@@ -21,4 +21,9 @@ COPY data/ ./data/
 ENV PORT=8080
 EXPOSE ${PORT}
 
-CMD ["streamlit", "run", "src/app_streamlit.py", "--server.port", "8080", "--server.headless", "true"]
+CMD ["streamlit", "run", "src/app_streamlit.py", \
+     "--server.port", "8080", \
+     "--server.address", "0.0.0.0", \
+     "--server.headless", "true", \
+     "--server.enableCORS", "false", \
+     "--server.enableXsrfProtection", "false"]
