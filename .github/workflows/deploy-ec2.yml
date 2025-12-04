@@ -1,0 +1,112 @@
+name: Deploy to EC2
+
+on:
+  workflow_run:
+    workflows: ["Build and Push to AWS ECR"]
+    types:
+      - completed
+  workflow_dispatch:  # Allow manual trigger
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: rag-ai-demo
+  IMAGE_TAG: latest
+  EC2_HOST: ${{ secrets.EC2_HOST }}
+  EC2_USER: ${{ secrets.EC2_USER }}
+  CONTAINER_NAME: rag-ai-app
+  CONTAINER_PORT: 8000
+  HOST_PORT: 80
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set ECR image URI
+        id: image
+        run: |
+          ECR_REGISTRY=${{ steps.login-ecr.outputs.registry }}
+          IMAGE_URI=$ECR_REGISTRY/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+          echo "uri=$IMAGE_URI" >> $GITHUB_OUTPUT
+          echo "Image URI: $IMAGE_URI"
+
+      - name: Deploy to EC2
+        env:
+          PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+          IMAGE_URI: ${{ steps.image.outputs.uri }}
+        run: |
+          echo "Setting up SSH..."
+          echo "$PRIVATE_KEY" > private_key.pem
+          chmod 600 private_key.pem
+          
+          echo "Deploying to EC2..."
+          ssh -o StrictHostKeyChecking=no -i private_key.pem ${{ env.EC2_USER }}@${{ env.EC2_HOST }} << 'EOF'
+            set -e
+            
+            echo "Logging into ECR..."
+            aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ steps.login-ecr.outputs.registry }}
+            
+            echo "Pulling latest image..."
+            docker pull ${{ steps.image.outputs.uri }}
+            
+            echo "Stopping and removing old container..."
+            docker stop ${{ env.CONTAINER_NAME }} 2>/dev/null || true
+            docker rm ${{ env.CONTAINER_NAME }} 2>/dev/null || true
+            
+            echo "Starting new container..."
+            docker run -d \
+              --name ${{ env.CONTAINER_NAME }} \
+              --restart unless-stopped \
+              -p ${{ env.HOST_PORT }}:${{ env.CONTAINER_PORT }} \
+              ${{ steps.image.outputs.uri }}
+            
+            echo "Cleaning up old images..."
+            docker image prune -af
+            
+            echo "Deployment complete!"
+            docker ps | grep ${{ env.CONTAINER_NAME }}
+          EOF
+          
+          rm -f private_key.pem
+
+      - name: Verify deployment
+        run: |
+          echo "Waiting 10 seconds for container to start..."
+          sleep 10
+          
+          echo "Checking application health..."
+          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" http://${{ env.EC2_HOST }} || echo "000")
+          
+          if [ "$RESPONSE" = "200" ] || [ "$RESPONSE" = "302" ]; then
+            echo "✅ Application is responding (HTTP $RESPONSE)"
+            echo "🌐 Access your app at: http://${{ env.EC2_HOST }}"
+          else
+            echo "⚠️ Application returned HTTP $RESPONSE"
+            echo "Check the EC2 instance logs for details"
+            exit 1
+          fi
+
+      - name: Deployment summary
+        if: success()
+        run: |
+          echo "### 🚀 Deployment Successful!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Image:** \`${{ steps.image.outputs.uri }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Application URL:** http://${{ env.EC2_HOST }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Container:** \`${{ env.CONTAINER_NAME }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Port Mapping:** \`${{ env.HOST_PORT }}:${{ env.CONTAINER_PORT }}\`" >> $GITHUB_STEP_SUMMARY
