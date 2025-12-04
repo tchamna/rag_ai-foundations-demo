@@ -35,6 +35,46 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
+      - name: Create ECS Task Execution Role if not exists
+        run: |
+          # Check if role exists
+          if ! aws iam get-role --role-name ecsTaskExecutionRole 2>/dev/null; then
+            echo "Creating ecsTaskExecutionRole..."
+            
+            # Create trust policy
+            cat > trust-policy.json << 'EOF'
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Principal": {
+                  "Service": "ecs-tasks.amazonaws.com"
+                },
+                "Action": "sts:AssumeRole"
+              }
+            ]
+          }
+          EOF
+            
+            # Create role
+            aws iam create-role \
+              --role-name ecsTaskExecutionRole \
+              --assume-role-policy-document file://trust-policy.json
+            
+            # Attach AWS managed policy
+            aws iam attach-role-policy \
+              --role-name ecsTaskExecutionRole \
+              --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+            
+            echo "✅ ecsTaskExecutionRole created"
+            
+            # Wait for role to propagate
+            sleep 10
+          else
+            echo "✅ ecsTaskExecutionRole already exists"
+          fi
+
       - name: Create ECS cluster if not exists
         run: |
           if ! aws ecs describe-clusters --clusters ${{ env.ECS_CLUSTER }} --region ${{ env.AWS_REGION }} | grep -q "ACTIVE"; then
@@ -145,13 +185,53 @@ jobs:
               --region ${{ env.AWS_REGION }}
           fi
 
-      - name: Wait for service to stabilize
+      - name: Check service deployment status
         run: |
-          echo "Waiting for service to become stable..."
-          aws ecs wait services-stable \
-            --cluster ${{ env.ECS_CLUSTER }} \
-            --services ${{ env.ECS_SERVICE }} \
-            --region ${{ env.AWS_REGION }}
+          echo "Checking deployment status..."
+          
+          # Wait up to 5 minutes for tasks to start
+          for i in {1..30}; do
+            RUNNING_COUNT=$(aws ecs describe-services \
+              --cluster ${{ env.ECS_CLUSTER }} \
+              --services ${{ env.ECS_SERVICE }} \
+              --region ${{ env.AWS_REGION }} \
+              --query 'services[0].runningCount' \
+              --output text)
+            
+            echo "Running tasks: ${RUNNING_COUNT}"
+            
+            if [ "${RUNNING_COUNT}" -gt "0" ]; then
+              echo "✅ Service has running tasks"
+              break
+            fi
+            
+            if [ $i -eq 30 ]; then
+              echo "❌ Service failed to start. Checking task logs..."
+              
+              # Get task details
+              TASK_ARN=$(aws ecs list-tasks \
+                --cluster ${{ env.ECS_CLUSTER }} \
+                --service-name ${{ env.ECS_SERVICE }} \
+                --region ${{ env.AWS_REGION }} \
+                --query 'taskArns[0]' \
+                --output text)
+              
+              if [ "${TASK_ARN}" != "None" ] && [ -n "${TASK_ARN}" ]; then
+                echo "Task details:"
+                aws ecs describe-tasks \
+                  --cluster ${{ env.ECS_CLUSTER }} \
+                  --tasks ${TASK_ARN} \
+                  --region ${{ env.AWS_REGION }} \
+                  --query 'tasks[0].{Status:lastStatus,StoppedReason:stoppedReason,Containers:containers[*].{Name:name,Status:lastStatus,Reason:reason}}' \
+                  --output json
+              fi
+              
+              exit 1
+            fi
+            
+            echo "Waiting... (${i}/30)"
+            sleep 10
+          done
 
       - name: Get service URL
         id: service-url
