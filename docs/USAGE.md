@@ -15,7 +15,7 @@ python -m venv .venv
 - Install dependencies
 
 ```powershell
-pip install -r requirements.txt
+pip install -r light_requirements.txt
 ```
 
 - Precompute vectorstore (recommended for cloud deploys):

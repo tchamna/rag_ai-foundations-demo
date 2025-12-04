@@ -24,7 +24,7 @@ jobs:
         run: |
           python -m venv antenv
           source antenv/bin/activate
-          pip install -r requirements.txt
+          pip install -r light_requirements.txt
 
       # 🧩 Ensure output.tar.gz and vectorstore are included
       - name: Verify important files exist

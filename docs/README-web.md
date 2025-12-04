@@ -6,7 +6,7 @@ Run the backend (Python):
 
 ```powershell
 # from project root
-python -m pip install -r requirements.txt
+python -m pip install -r light_requirements.txt
 uvicorn src.api_server:app --reload --host 0.0.0.0 --port 8000
 ```
 

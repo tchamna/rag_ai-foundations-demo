@@ -22,13 +22,13 @@ python -m venv .venv
 2. Install runtime requirements (ML packages are optional for precomputed vectorstores):
 
 ```powershell
-pip install -r requirements.txt
+pip install -r light_requirements.txt
 ```
 
 If the above command fails (especially due to build errors for packages like pyarrow), try installing with pre-built binaries only:
 
 ```powershell
-pip install --only-binary=:all: -r requirements.txt
+pip install --only-binary=:all: -r light_requirements.txt
 ```
 
 3. (Optional) Precompute the vectorstore locally and commit it (recommended for cloud deploys):

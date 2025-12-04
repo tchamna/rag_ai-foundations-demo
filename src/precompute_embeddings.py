@@ -13,7 +13,7 @@ try:
 except ImportError as e:
     print("Missing dependency when importing project modules:", e)
     print("Please install dependencies, e.g.:")
-    print("  pip install -r requirements.txt")
+    print("  pip install -r light_requirements.txt")
     print("Then re-run this script: python src\\precompute_embeddings.py")
     sys.exit(1)
 
