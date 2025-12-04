@@ -18,7 +18,7 @@ COPY src/ ./src/
 COPY vectorstore/ ./vectorstore/
 COPY data/ ./data/
 
-ENV PORT=8000
+ENV PORT=8080
 EXPOSE ${PORT}
 
-CMD ["streamlit", "run", "src/app_streamlit.py", "--server.port", "8000", "--server.headless", "true"]
+CMD ["streamlit", "run", "src/app_streamlit.py", "--server.port", "8080", "--server.headless", "true"]
