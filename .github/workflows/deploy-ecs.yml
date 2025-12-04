@@ -1,0 +1,194 @@
+name: Deploy to AWS ECS Fargate
+
+on:
+  workflow_run:
+    workflows: ["Build and Push to AWS ECR"]
+    types:
+      - completed
+  workflow_dispatch:  # Allow manual trigger
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: rag-ai-demo
+  ECS_CLUSTER: rag-ai-cluster
+  ECS_SERVICE: rag-ai-service
+  ECS_TASK_DEFINITION: rag-ai-task
+  CONTAINER_NAME: rag-ai-app
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Create ECS cluster if not exists
+        run: |
+          if ! aws ecs describe-clusters --clusters ${{ env.ECS_CLUSTER }} --region ${{ env.AWS_REGION }} | grep -q "ACTIVE"; then
+            echo "Creating ECS cluster..."
+            aws ecs create-cluster --cluster-name ${{ env.ECS_CLUSTER }} --region ${{ env.AWS_REGION }}
+          else
+            echo "ECS cluster already exists"
+          fi
+
+      - name: Register ECS task definition
+        id: task-def
+        run: |
+          ECR_IMAGE="${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest"
+          
+          cat > task-definition.json << EOF
+          {
+            "family": "${{ env.ECS_TASK_DEFINITION }}",
+            "networkMode": "awsvpc",
+            "requiresCompatibilities": ["FARGATE"],
+            "cpu": "1024",
+            "memory": "2048",
+            "executionRoleArn": "arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/ecsTaskExecutionRole",
+            "containerDefinitions": [
+              {
+                "name": "${{ env.CONTAINER_NAME }}",
+                "image": "${ECR_IMAGE}",
+                "essential": true,
+                "portMappings": [
+                  {
+                    "containerPort": 8080,
+                    "protocol": "tcp"
+                  }
+                ],
+                "logConfiguration": {
+                  "logDriver": "awslogs",
+                  "options": {
+                    "awslogs-group": "/ecs/${{ env.ECS_TASK_DEFINITION }}",
+                    "awslogs-region": "${{ env.AWS_REGION }}",
+                    "awslogs-stream-prefix": "ecs",
+                    "awslogs-create-group": "true"
+                  }
+                },
+                "environment": [
+                  {
+                    "name": "PORT",
+                    "value": "8080"
+                  }
+                ]
+              }
+            ]
+          }
+          EOF
+          
+          aws ecs register-task-definition \
+            --cli-input-json file://task-definition.json \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Create or update ECS service
+        run: |
+          # Check if service exists
+          if aws ecs describe-services \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --services ${{ env.ECS_SERVICE }} \
+            --region ${{ env.AWS_REGION }} | grep -q "ACTIVE"; then
+            
+            echo "Updating existing service..."
+            aws ecs update-service \
+              --cluster ${{ env.ECS_CLUSTER }} \
+              --service ${{ env.ECS_SERVICE }} \
+              --task-definition ${{ env.ECS_TASK_DEFINITION }} \
+              --force-new-deployment \
+              --region ${{ env.AWS_REGION }}
+          else
+            echo "Creating new service..."
+            # Get default VPC and subnets
+            VPC_ID=$(aws ec2 describe-vpcs --filters "Name=isDefault,Values=true" --query "Vpcs[0].VpcId" --output text --region ${{ env.AWS_REGION }})
+            SUBNETS=$(aws ec2 describe-subnets --filters "Name=vpc-id,Values=${VPC_ID}" --query "Subnets[*].SubnetId" --output text --region ${{ env.AWS_REGION }} | tr '\t' ',')
+            
+            # Create security group
+            SG_ID=$(aws ec2 create-security-group \
+              --group-name rag-ai-fargate-sg \
+              --description "Security group for RAG AI Fargate service" \
+              --vpc-id ${VPC_ID} \
+              --region ${{ env.AWS_REGION }} \
+              --output text --query 'GroupId' 2>/dev/null || \
+              aws ec2 describe-security-groups \
+                --filters "Name=group-name,Values=rag-ai-fargate-sg" \
+                --query "SecurityGroups[0].GroupId" \
+                --output text \
+                --region ${{ env.AWS_REGION }})
+            
+            # Allow inbound traffic on port 8080
+            aws ec2 authorize-security-group-ingress \
+              --group-id ${SG_ID} \
+              --protocol tcp \
+              --port 8080 \
+              --cidr 0.0.0.0/0 \
+              --region ${{ env.AWS_REGION }} 2>/dev/null || true
+            
+            # Create service
+            aws ecs create-service \
+              --cluster ${{ env.ECS_CLUSTER }} \
+              --service-name ${{ env.ECS_SERVICE }} \
+              --task-definition ${{ env.ECS_TASK_DEFINITION }} \
+              --desired-count 1 \
+              --launch-type FARGATE \
+              --network-configuration "awsvpcConfiguration={subnets=[${SUBNETS}],securityGroups=[${SG_ID}],assignPublicIp=ENABLED}" \
+              --region ${{ env.AWS_REGION }}
+          fi
+
+      - name: Wait for service to stabilize
+        run: |
+          echo "Waiting for service to become stable..."
+          aws ecs wait services-stable \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --services ${{ env.ECS_SERVICE }} \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Get service URL
+        id: service-url
+        run: |
+          echo "Getting task public IP..."
+          TASK_ARN=$(aws ecs list-tasks \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service-name ${{ env.ECS_SERVICE }} \
+            --region ${{ env.AWS_REGION }} \
+            --query 'taskArns[0]' \
+            --output text)
+          
+          ENI_ID=$(aws ecs describe-tasks \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --tasks ${TASK_ARN} \
+            --region ${{ env.AWS_REGION }} \
+            --query 'tasks[0].attachments[0].details[?name==`networkInterfaceId`].value' \
+            --output text)
+          
+          PUBLIC_IP=$(aws ec2 describe-network-interfaces \
+            --network-interface-ids ${ENI_ID} \
+            --region ${{ env.AWS_REGION }} \
+            --query 'NetworkInterfaces[0].Association.PublicIp' \
+            --output text)
+          
+          echo "public_ip=${PUBLIC_IP}" >> $GITHUB_OUTPUT
+          echo "🌐 Application URL: http://${PUBLIC_IP}:8080"
+
+      - name: Deployment summary
+        if: success()
+        run: |
+          echo "### 🚀 ECS Fargate Deployment Successful!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Cluster:** \`${{ env.ECS_CLUSTER }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Service:** \`${{ env.ECS_SERVICE }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Application URL:** http://${{ steps.service-url.outputs.public_ip }}:8080" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Note:** For production, set up an Application Load Balancer for a friendly domain name." >> $GITHUB_STEP_SUMMARY
