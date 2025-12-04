@@ -25,6 +25,12 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
+If the above command fails (especially due to build errors for packages like pyarrow), try installing with pre-built binaries only:
+
+```powershell
+pip install --only-binary=:all: -r requirements.txt
+```
+
 3. (Optional) Precompute the vectorstore locally and commit it (recommended for cloud deploys):
 
 ```powershell

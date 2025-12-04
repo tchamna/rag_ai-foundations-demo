@@ -10,3 +10,4 @@ langchain-community>=0.0.20
 langchain-huggingface>=0.0.3
 # Optional: small utilities
 python-multipart>=0.0.5
+sentence-transformers

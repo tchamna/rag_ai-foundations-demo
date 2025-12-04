@@ -4,14 +4,14 @@ WORKDIR /app
 
 # Install minimal system deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
-	curl \
-	&& rm -rf /var/lib/apt/lists/*
+    curl \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements for better caching
-COPY requirements.txt ./
+COPY light_requirements.txt ./
 
 # Install Python packages
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r light_requirements.txt
 
 # Copy application code and precomputed vectorstore
 COPY src/ ./src/

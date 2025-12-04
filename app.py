@@ -15,4 +15,5 @@ import os
 # calling set_page_config again (Streamlit requires it to be the first call).
 os.environ.setdefault("STREAMLIT_PAGE_CONFIG_SET", "1")
 
+# Import and run the main app
 from src import app_streamlit  
