@@ -259,7 +259,7 @@ def enforce_citations(answer: str, contexts):
 # Main — Q&A
 # -------------------------
 # Two-column layout: main Q&A (col1) + retrieval preview (col2)
-col1, col2 = st.columns([2, 1])
+col1, col2 = st.columns([2, 1], gap="medium")
 
 with col1:
     st.subheader("Chat — ask a question")
@@ -633,7 +633,7 @@ with col2:
             docs = pickle.load(f)
         st.success(f"✅ Loaded {len(docs)} chunks")
 
-        search_term = st.text_input("Search chunks (optional)", key="vector_search")
+        search_term = st.text_input("Search chunks (optional)", key="vector_search", label_visibility="visible")
         show_all = st.checkbox("Show all chunks", value=False, key="vector_show_all")
 
         # Only show docs when the user searches OR explicitly requests to

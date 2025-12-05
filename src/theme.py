@@ -21,6 +21,24 @@ def get_theme_css(dark_mode: bool) -> str:
         .stApp, .stApp .css-1d391kg { background: var(--bg) !important; color: var(--text) !important; }
         .stSidebar, .stSidebar .css-1d391kg { background: var(--panel) !important; color: var(--text) !important; }
         header, .stApp header, .stDeployButton, .stStatus { background: var(--panel) !important; color: var(--text) !important; }
+        
+        /* ---------- COLUMN LAYOUT FIX ---------- */
+        [data-testid="column"] { 
+            min-width: 0 !important; 
+            flex: 1 1 auto !important;
+        }
+        [data-testid="column"] > div { 
+            width: 100% !important; 
+            min-width: 100% !important;
+        }
+        .stTextInput > div > div > input { 
+            width: 100% !important; 
+            min-width: 100% !important;
+            box-sizing: border-box !important;
+        }
+        .stTextInput > div {
+            width: 100% !important;
+        }
 
         .stButton>button,
         .stDownloadButton>button,
@@ -203,6 +221,24 @@ def get_theme_css(dark_mode: bool) -> str:
         pre, code {
             color: #000000 !important;
             background: #f6f6f6 !important;
+        }
+        
+        /* ---------- COLUMN LAYOUT FIX ---------- */
+        [data-testid="column"] { 
+            min-width: 0 !important; 
+            flex: 1 1 auto !important;
+        }
+        [data-testid="column"] > div { 
+            width: 100% !important; 
+            min-width: 100% !important;
+        }
+        .stTextInput > div > div > input { 
+            width: 100% !important; 
+            min-width: 100% !important;
+            box-sizing: border-box !important;
+        }
+        .stTextInput > div {
+            width: 100% !important;
         }
 
         /* Light mode expander readability */
