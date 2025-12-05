@@ -1,10 +1,9 @@
 name: Deploy to EC2
 
 on:
-  workflow_run:
-    workflows: ["Build and Push to AWS ECR"]
-    types:
-      - completed
+  push:
+    branches:
+      - main
   workflow_dispatch:  # Allow manual trigger
 
 env:
@@ -18,9 +17,18 @@ env:
   HOST_PORT: 8080
 
 jobs:
+  # Wait for ECR build to complete first
+  wait-for-ecr:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for ECR workflow
+        run: |
+          echo "Waiting 2 minutes for ECR build to complete..."
+          sleep 120
+  
   deploy:
     runs-on: ubuntu-latest
-    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    needs: wait-for-ecr
 
     steps:
       - name: Configure AWS credentials
@@ -83,20 +91,27 @@ jobs:
 
       - name: Verify deployment
         run: |
-          echo "Waiting 10 seconds for container to start..."
-          sleep 10
+          echo "Waiting 15 seconds for container to start..."
+          sleep 15
           
-          echo "Checking application health on port 8080..."
-          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" http://${{ env.EC2_HOST }}:8080 || echo "000")
+          echo "Checking application health via HTTPS..."
+          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" https://rag.tchamna.com || echo "000")
           
           if [ "$RESPONSE" = "200" ] || [ "$RESPONSE" = "302" ]; then
             echo "✅ Application is responding (HTTP $RESPONSE)"
-            echo "🌐 Access your app at: http://${{ env.EC2_HOST }}:8080"
-            echo "📝 Note: If Nginx is configured, use http://${{ env.EC2_HOST }} (port 80)"
+            echo "🌐 Live at: https://rag.tchamna.com"
           else
-            echo "⚠️ Application returned HTTP $RESPONSE"
-            echo "Check the EC2 instance logs for details"
-            exit 1
+            echo "⚠️ HTTPS check returned HTTP $RESPONSE"
+            echo "Trying HTTP fallback..."
+            RESPONSE_HTTP=$(curl -s -o /dev/null -w "%{http_code}" http://${{ env.EC2_HOST }}:8080 || echo "000")
+            if [ "$RESPONSE_HTTP" = "200" ] || [ "$RESPONSE_HTTP" = "302" ]; then
+              echo "✅ Container is running on port 8080 (HTTP $RESPONSE_HTTP)"
+              echo "⚠️ Nginx might need restart or DNS propagation in progress"
+            else
+              echo "❌ Application not responding on port 8080 either"
+              echo "Check EC2 logs: docker logs ${{ env.CONTAINER_NAME }}"
+              exit 1
+            fi
           fi
 
       - name: Deployment summary
