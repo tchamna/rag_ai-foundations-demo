@@ -21,10 +21,36 @@ jobs:
   wait-for-ecr:
     runs-on: ubuntu-latest
     steps:
-      - name: Wait for ECR workflow
+      - name: Wait for ECR workflow to complete
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          echo "Waiting 2 minutes for ECR build to complete..."
-          sleep 120
+          echo "Waiting for ECR workflow to complete..."
+          MAX_WAIT=600  # 10 minutes max
+          ELAPSED=0
+          
+          while [ $ELAPSED -lt $MAX_WAIT ]; do
+            # Get the latest ECR workflow run for this commit
+            STATUS=$(gh run list --workflow=deploy-ecr.yml --repo ${{ github.repository }} --json status,conclusion,headSha --jq ".[] | select(.headSha == \"${{ github.sha }}\") | .status" | head -n1)
+            
+            if [ "$STATUS" = "completed" ]; then
+              CONCLUSION=$(gh run list --workflow=deploy-ecr.yml --repo ${{ github.repository }} --json status,conclusion,headSha --jq ".[] | select(.headSha == \"${{ github.sha }}\") | .conclusion" | head -n1)
+              if [ "$CONCLUSION" = "success" ]; then
+                echo "✅ ECR workflow completed successfully!"
+                exit 0
+              else
+                echo "❌ ECR workflow failed with conclusion: $CONCLUSION"
+                exit 1
+              fi
+            fi
+            
+            echo "ECR workflow status: $STATUS (waited ${ELAPSED}s)"
+            sleep 15
+            ELAPSED=$((ELAPSED + 15))
+          done
+          
+          echo "⚠️ Timeout waiting for ECR workflow (${MAX_WAIT}s)"
+          exit 1
   
   deploy:
     runs-on: ubuntu-latest
