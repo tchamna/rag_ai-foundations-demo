@@ -198,12 +198,29 @@ status = st.sidebar.empty()
 
 def rebuild_index():
     status.info("Building vector store...")
+    
+    # Clear cached RAG pipeline so it reloads the new index
+    get_rag_pipeline.clear()
+    
     corpus = load_corpus(DATA_DIR)
+    status.info(f"Loaded {len(corpus)} documents from {DATA_DIR}")
+    
+    # Show breakdown by file
+    from collections import Counter
+    sources = Counter([doc['meta']['source'].split(' (')[0] for doc in corpus])
+    status.info(f"Files: {dict(sources)}")
+    
     docs = build_documents(corpus)
+    status.info(f"Split into {len(docs)} chunks")
+    
     index = VectorIndex()
     index.build(docs)
     index.save(VECTORSTORE_DIR)
-    status.success(f"Built vector store with {len(docs)} chunks.")
+    
+    # Clear cache again after saving new index
+    get_rag_pipeline.clear()
+    
+    status.success(f"✅ Built vector store with {len(docs)} chunks from {len(sources)} files. Cache cleared.")
 
 if rebuild:
     rebuild_index()
@@ -212,6 +229,7 @@ if rebuild:
 # Sidebar — Upload
 # -------------------------
 st.sidebar.header("Upload Document")
+st.sidebar.warning("⚠️ Uploads are temporary and will be lost on redeployment. For permanent documents, commit files to the repository.")
 upload = st.sidebar.file_uploader("Upload .txt, .csv or .xlsx", type=["txt","csv","xlsx"])
 if upload:
     target_dir = DATA_DIR / "user_uploads"
@@ -628,6 +646,20 @@ with col2:
 # -------------------------
 with col2:
     st.markdown("### Vector DB Browser")
+    
+    # Add aggressive CSS to force input full width
+    st.markdown("""
+        <style>
+        div[data-testid="stVerticalBlock"] div[data-testid="stVerticalBlock"] .stTextInput > div {
+            width: 100% !important;
+        }
+        div[data-testid="stVerticalBlock"] div[data-testid="stVerticalBlock"] .stTextInput input {
+            width: 100% !important;
+            min-width: 100% !important;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+    
     try:
         with open(VECTORSTORE_DIR / "docs.pkl", "rb") as f:
             docs = pickle.load(f)
