@@ -14,7 +14,7 @@ env:
   EC2_USER: ${{ secrets.EC2_USER }}
   CONTAINER_NAME: rag-ai-app
   CONTAINER_PORT: 8080
-  HOST_PORT: 8080
+  HOST_PORT: 3002
 
 jobs:
   # Wait for ECR build to complete first
@@ -129,12 +129,12 @@ jobs:
           else
             echo "⚠️ HTTPS check returned HTTP $RESPONSE"
             echo "Trying HTTP fallback..."
-            RESPONSE_HTTP=$(curl -s -o /dev/null -w "%{http_code}" http://${{ env.EC2_HOST }}:8080 || echo "000")
+            RESPONSE_HTTP=$(curl -s -o /dev/null -w "%{http_code}" http://${{ env.EC2_HOST }}:3002 || echo "000")
             if [ "$RESPONSE_HTTP" = "200" ] || [ "$RESPONSE_HTTP" = "302" ]; then
-              echo "✅ Container is running on port 8080 (HTTP $RESPONSE_HTTP)"
+              echo "✅ Container is running on port 3002 (HTTP $RESPONSE_HTTP)"
               echo "⚠️ Nginx might need restart or DNS propagation in progress"
             else
-              echo "❌ Application not responding on port 8080 either"
+              echo "❌ Application not responding on port 3002 either"
               echo "Check EC2 logs: docker logs ${{ env.CONTAINER_NAME }}"
               exit 1
             fi
