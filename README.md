@@ -1,11 +1,6 @@
-# RAG Demo
+# RAG Studio
 
-This repository contains two retrieval augmented chat surfaces:
-
-- **NJ Sharing Chat** at `/njsharing`, backed by documents under `data/`.
-- **Generic RAG Studio** at `/` (also `/generic`), backed by uploads under `data_generic/`.
-
-Both apps let users drag documents into the sidebar, rebuild the index, refresh question ideas, and ask natural-language questions over the indexed content with citations.
+Upload documents and chat with their content using local embeddings, FAISS retrieval, and cited LLM answers.
 
 ## Run
 
@@ -14,17 +9,8 @@ python -m pip install -r requirements.txt
 python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-Open http://127.0.0.1:8000.
-
-Open http://127.0.0.1:8000/generic for the generic upload-and-query version. Its APIs live under `/api/generic/*`, and uploaded files are stored under `data_generic/uploads/` so they do not mix with the NJ Sharing documents.
-
-Open http://127.0.0.1:8000/generic/compare to compare two LLM answers over the generic uploaded-document index.
-
-Use http://127.0.0.1:8000/njsharing/compare to compare OpenAI, Claude, and Ollama answers side by side. The compare API is `/api/compare` and runs provider calls in parallel against the same retrieved context.
-
-Use http://127.0.0.1:8000/njsharing/freemodels to compare three local free Ollama models. The API is `/api/freemodels`. Defaults are `llama3:8b`, `mistral:latest`, and `gouranshitera/bloomz-1b7`; override with `RAG_FREE_MODELS`.
-
-Compare results include elapsed seconds, input/output token counts, and configured price per million tokens. Defaults are the cheapest wired model for each provider: OpenAI `gpt-5-nano` at `$0.05/$0.40` per million input/output tokens, Groq `llama-3.3-70b-versatile` at `$0/$0` by default, Claude `claude-haiku-4-5-20251001` at `$1/$5`, and local Ollama `llama3.2:1b` at `$0/$0`. Override models with `RAG_OPENAI_MODEL`, `RAG_GROQ_MODEL`, `RAG_CLAUDE_MODEL`, and `RAG_OLLAMA_MODEL`; override prices with `OPENAI_INPUT_PER_MILLION`, `OPENAI_OUTPUT_PER_MILLION`, `GROQ_INPUT_PER_MILLION`, `GROQ_OUTPUT_PER_MILLION`, `CLAUDE_INPUT_PER_MILLION`, `CLAUDE_OUTPUT_PER_MILLION`, `OLLAMA_INPUT_PER_MILLION`, and `OLLAMA_OUTPUT_PER_MILLION`.
+Open `/` (or `/generic`) for the document workspace, `/generic/compare` to compare the three supported LLMs on the same evidence, and `/battery` for Battery Education.
+Private uploads, indexes, and caches stay under `storage/workspaces/` and are excluded from Git. The app does not load a shared `data/` document collection.
 
 Answers are synthesized after retrieval with this provider order:
 
@@ -81,8 +67,7 @@ request-body limits at the reverse proxy (multipart parsing precedes file valida
 rate limiting, parser sandboxing, retention and cleanup policies, monitoring, and backups.
 Serve through HTTPS and set `RAG_SECURE_COOKIES=1`. Same-origin writes are enforced;
 configure the reverse proxy to preserve the public host and scheme.
-Do not expose the legacy `/api/*` NJ Sharing demo endpoints in a public deployment.
-They remain a shared local demo. Only `/api/generic/*` uses browser workspaces.
+Document uploads and chat use the browser-isolated `/api/generic/*` endpoints.
 Relevant document excerpts are sent to configured model providers to generate answers.
 Retrieval uses local sentence embeddings and FAISS semantic search. Scanned-document OCR
 and full conversational follow-up resolution are not implemented.

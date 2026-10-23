@@ -8,6 +8,14 @@ from fastapi.testclient import TestClient
 from app.main import app
 
 class WorkspaceTests(unittest.TestCase):
+    def test_removed_shared_demo_routes(self):
+        with TestClient(app) as client:
+            for path in ['/njsharing', '/njsharing/compare', '/njsharing/freemodels',
+                         '/api/status', '/api/questions', '/static/index.html']:
+                self.assertEqual(client.get(path).status_code, 404, path)
+            for path in ['/api/chat', '/api/compare', '/api/freemodels', '/api/upload', '/api/reindex']:
+                self.assertEqual(client.post(path, json={'message':'hello'}).status_code, 404, path)
+
     def test_document_lifecycle_and_isolation(self):
         with patch('app.rag.llm_questions.synthesis.PROVIDER_ORDER', []), TestClient(app) as first, TestClient(app) as second:
             try:

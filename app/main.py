@@ -12,7 +12,7 @@ from fastapi import FastAPI, Request, HTTPException
 from starlette.concurrency import run_in_threadpool
 from fastapi import File, UploadFile
 from starlette.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import FileResponse, StreamingResponse, RedirectResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -20,7 +20,6 @@ from .security import GuardrailMiddleware
 from .rag.config import env_sources_for_status
 from .rag.cache import ResponseCache
 from .rag.index import RagIndex
-from .rag.questions import generate_questions, generate_document_questions
 from .rag.llm_questions import suggest_questions
 from .rag.intent import interpret_question
 from .rag.model_comparison import compare_answers
@@ -38,18 +37,8 @@ from .rag.synthesis import (
 
 
 ROOT = Path(__file__).resolve().parent.parent
-DATA_DIR = ROOT / "data_njsharing"
-GENERIC_DATA_DIR = ROOT / "data_generic"
 STATIC_DIR = ROOT / "static"
-INDEX_PATH = ROOT / "storage" / "rag_index.pkl"
-GENERIC_INDEX_PATH = ROOT / "storage" / "generic_rag_index.pkl"
-CACHE_PATH = ROOT / "storage" / "response_cache.json"
-GENERIC_CACHE_PATH = ROOT / "storage" / "generic_response_cache.json"
 
-rag = RagIndex(DATA_DIR, INDEX_PATH)
-generic_rag = RagIndex(GENERIC_DATA_DIR, GENERIC_INDEX_PATH)
-response_cache = ResponseCache(CACHE_PATH)
-generic_response_cache = ResponseCache(GENERIC_CACHE_PATH)
 app = FastAPI(title="RAG Demo", version="1.0.0")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -107,10 +96,6 @@ class CompareRequest(ChatRequest):
     models: list[str] | None = Field(default=None, max_length=3)
 
 
-@app.on_event("startup")
-def startup() -> None:
-    rag.load_or_build()
-    generic_rag.load_or_build()
 
 
 @app.get("/")
@@ -118,9 +103,6 @@ def home() -> FileResponse:
     return FileResponse(STATIC_DIR / "generic.html")
 
 
-@app.get("/njsharing")
-def njsharing_home() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
 
 
 @app.get("/generic")
@@ -133,38 +115,16 @@ def generic_compare_page() -> FileResponse:
     return FileResponse(STATIC_DIR / "generic_compare.html")
 
 
-@app.get("/njsharing/compare")
-def compare_page() -> FileResponse:
-    return FileResponse(STATIC_DIR / "compare.html")
 
 
-@app.get("/njsharing/freemodels")
-def free_models_page() -> FileResponse:
-    return FileResponse(STATIC_DIR / "freemodels.html")
 
 
-@app.get("/api/status")
-def status() -> dict:
-    stats = rag.stats()
-    stats["env_sources"] = env_sources_for_status(ENV_SOURCES)
-    stats["synthesis"] = synthesis_status()
-    return stats
 
 
-@app.get("/api/questions")
-def questions() -> dict:
-    return {"questions": generate_questions(rag.chunks, limit=100)}
 
 
-@app.post("/api/reindex")
-def reindex() -> dict:
-    rag.rebuild()
-    return rag.stats()
 
 
-@app.post("/api/upload")
-async def upload(files: list[UploadFile] = File(...)) -> dict:
-    return await upload_to_index(files, rag, DATA_DIR)
 
 
 @app.get("/api/generic/status")
@@ -298,48 +258,8 @@ def unique_upload_path(directory: Path, filename: str) -> Path:
     return candidate
 
 
-async def upload_to_index(files: list[UploadFile], index: RagIndex, data_dir: Path) -> dict:
-    uploaded: list[dict] = []
-    upload_dir = data_dir / "uploads"
-    upload_dir.mkdir(parents=True, exist_ok=True)
-    for file in files:
-        original_name = Path(file.filename or "document").name
-        suffix = Path(original_name).suffix.lower()
-        if suffix not in SUPPORTED_EXTENSIONS:
-            uploaded.append({"name": original_name, "ok": False, "error": f"Unsupported file type: {suffix or 'none'}"})
-            continue
-        target = unique_upload_path(upload_dir, original_name)
-        content = await file.read()
-        target.write_bytes(content)
-        uploaded.append({"name": original_name, "ok": True, "path": str(target.relative_to(data_dir)), "bytes": len(content)})
-    index.rebuild()
-    return {"uploaded": uploaded, "status": index.stats()}
 
 
-@app.post("/api/chat")
-def chat(request: ChatRequest) -> dict:
-    response_language = detect_language(request.message)
-    retrieval_query = translate_query_for_retrieval(request.message)
-    if not rag.is_in_scope(retrieval_query):
-        return out_of_scope_response(request.message)
-    cache_key = cache_key_parts("chat", request, retrieval_query, response_language)
-    cached = response_cache.get(cache_key)
-    if cached:
-        return cached
-    hits = rag.search(retrieval_query, limit=request.top_k)
-    response = synthesize_answer(request.message, hits, response_language=response_language)
-    payload = {
-        "message": request.message,
-        "answer": response["answer"],
-        "citations": response["citations"],
-        "mode": response.get("mode"),
-        "model": response.get("model"),
-        "warning": response.get("warning"),
-        "retrieval_query": retrieval_query,
-        "response_language": response_language,
-        "status": rag.stats(),
-    }
-    return response_cache.set(cache_key, payload)
 
 
 @app.post("/api/generic/chat")
@@ -420,52 +340,8 @@ def generic_compare(request: CompareRequest, http_request: Request) -> dict:
     return generic_response_cache.set(cache_key, payload)
 
 
-@app.post("/api/compare")
-def compare(request: CompareRequest) -> dict:
-    response_language = detect_language(request.message)
-    retrieval_query = translate_query_for_retrieval(request.message)
-    if not rag.is_in_scope(retrieval_query):
-        return out_of_scope_compare_response(request.message)
-    cache_key = cache_key_parts("compare", request, retrieval_query, response_language)
-    cached = response_cache.get(cache_key)
-    if cached:
-        return cached
-    hits = rag.search(retrieval_query, limit=request.top_k)
-    response = compare_models(request.message, hits, request.providers, response_language=response_language)
-    payload = {
-        "message": request.message,
-        "results": response["results"],
-        "citations": response["citations"],
-        "retrieval_query": retrieval_query,
-        "response_language": response_language,
-        "status": rag.stats(),
-        "synthesis": synthesis_status(),
-    }
-    return response_cache.set(cache_key, payload)
 
 
-@app.post("/api/freemodels")
-def free_models(request: CompareRequest) -> dict:
-    response_language = detect_language(request.message)
-    retrieval_query = translate_query_for_retrieval(request.message)
-    if not rag.is_in_scope(retrieval_query):
-        return out_of_scope_compare_response(request.message)
-    cache_key = cache_key_parts("freemodels", request, retrieval_query, response_language)
-    cached = response_cache.get(cache_key)
-    if cached:
-        return cached
-    hits = rag.search(retrieval_query, limit=request.top_k)
-    response = compare_free_models(request.message, hits, request.models, response_language=response_language)
-    payload = {
-        "message": request.message,
-        "results": response["results"],
-        "citations": response["citations"],
-        "retrieval_query": retrieval_query,
-        "response_language": response_language,
-        "status": rag.stats(),
-        "synthesis": synthesis_status(),
-    }
-    return response_cache.set(cache_key, payload)
 
 
 def cache_key_parts(
@@ -473,9 +349,9 @@ def cache_key_parts(
     request: CompareRequest | ChatRequest,
     retrieval_query: str,
     response_language: str,
-    index: RagIndex | None = None,
+    index: RagIndex,
 ) -> dict:
-    selected_index = index or rag
+    selected_index = index
     return {
         "route": route,
         "message": " ".join(request.message.lower().split()),
@@ -492,51 +368,13 @@ def cache_key_parts(
     }
 
 
-def out_of_scope_response(message: str) -> dict:
-    return {
-        "message": message,
-        "answer": "This question appears to be outside the indexed NJ Sharing Network documents. Ask about the loaded HR SOPs, HIPAA notice, policies, procedures, benefits, badges, privacy, or related document content.",
-        "citations": [],
-        "mode": "scope-gate",
-        "model": "none",
-        "warning": "Skipped retrieval and model calls because the query did not match the indexed document scope.",
-        "status": rag.stats(),
-        "cache": {"hit": False, "tokens_saved": 0},
-    }
 
 
-def out_of_scope_compare_response(message: str) -> dict:
-    return {
-        "message": message,
-        "results": [
-            {
-                "mode": "scope-gate",
-                "model": "none",
-                "ok": False,
-                "answer": "",
-                "error": "Skipped retrieval and model calls because the query appears outside the indexed document scope.",
-                "elapsed_seconds": 0,
-                "tokens": {"input": 0, "output": 0, "estimated": False},
-                "pricing": {"input_per_million": 0, "output_per_million": 0},
-                "estimated_cost_usd": 0,
-            }
-        ],
-        "citations": [],
-        "status": rag.stats(),
-        "synthesis": synthesis_status(),
-        "cache": {"hit": False, "tokens_saved": 0},
-    }
 
 
 from .battery import router as battery_router
 app.include_router(battery_router)
 
 
-@app.get('/compare', include_in_schema=False)
-def legacy_compare_redirect():
-    return RedirectResponse('/njsharing/compare', status_code=307)
 
 
-@app.get('/freemodels', include_in_schema=False)
-def legacy_free_models_redirect():
-    return RedirectResponse('/njsharing/freemodels', status_code=307)
