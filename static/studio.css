@@ -20,3 +20,5 @@
 @font-face{font-family:StudioCharis;src:url('/static/fonts/Charis-Bold.woff2') format('woff2');font-weight:700;font-style:normal;font-display:swap}
 .studio .answer,.studio .modal-text,.studio .citation{font-family:StudioCharis,'Segoe UI',serif;font-size:16px;line-height:1.85;font-variant-ligatures:normal;text-transform:none;letter-spacing:normal}
 .studio .citation p{font-size:14px;line-height:1.8}.studio .answer strong{font-weight:700}
+
+.studio .compare-nav{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-shrink:0;padding:14px 16px;border:1px solid #cddbd0;border-radius:12px;background:#eaf1eb;color:#294538;text-decoration:none;font-size:14px}.studio .compare-nav:hover{background:#dce9df;border-color:#8fae99}.studio .compare-nav:focus-visible{outline:2px solid #698566;outline-offset:3px}
