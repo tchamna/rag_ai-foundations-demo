@@ -1,172 +1,51 @@
 name: Deploy to EC2
 
 on:
-  push:
-    branches:
-      - main
-  workflow_dispatch:  # Allow manual trigger
+  workflow_run:
+    workflows: ["Build and Push to AWS ECR"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
 
-env:
-  AWS_REGION: us-east-1
-  ECR_REPOSITORY: rag-ai-demo
-  IMAGE_TAG: latest
-  EC2_HOST: ${{ secrets.EC2_HOST }}
-  EC2_USER: ${{ secrets.EC2_USER }}
-  CONTAINER_NAME: rag-ai-app
-  CONTAINER_PORT: 8080
-  HOST_PORT: 3002
+concurrency:
+  group: rag-studio-production
+  cancel-in-progress: false
 
 jobs:
-  # Wait for ECR build to complete first
-  wait-for-ecr:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Wait for ECR workflow to complete
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          echo "Waiting for ECR workflow to complete..."
-          MAX_WAIT=2400  # 10 minutes max
-          ELAPSED=0
-          
-          while [ $ELAPSED -lt $MAX_WAIT ]; do
-            # Get the latest ECR workflow run for this commit
-            STATUS=$(gh run list --workflow=deploy-ecr.yml --repo ${{ github.repository }} --json status,conclusion,headSha --jq ".[] | select(.headSha == \"${{ github.sha }}\") | .status" | head -n1)
-            
-            if [ "$STATUS" = "completed" ]; then
-              CONCLUSION=$(gh run list --workflow=deploy-ecr.yml --repo ${{ github.repository }} --json status,conclusion,headSha --jq ".[] | select(.headSha == \"${{ github.sha }}\") | .conclusion" | head -n1)
-              if [ "$CONCLUSION" = "success" ]; then
-                echo "✅ ECR workflow completed successfully!"
-                exit 0
-              else
-                echo "❌ ECR workflow failed with conclusion: $CONCLUSION"
-                exit 1
-              fi
-            fi
-            
-            echo "ECR workflow status: $STATUS (waited ${ELAPSED}s)"
-            sleep 15
-            ELAPSED=$((ELAPSED + 15))
-          done
-          
-          echo "⚠️ Timeout waiting for ECR workflow (${MAX_WAIT}s)"
-          exit 1
-  
   deploy:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
-    needs: wait-for-ecr
-
+    permissions:
+      contents: read
     steps:
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Set ECR image URI
-        id: image
+          aws-region: us-east-1
+      - name: Deploy through Systems Manager
         run: |
-          ECR_REGISTRY=${{ steps.login-ecr.outputs.registry }}
-          IMAGE_URI=$ECR_REGISTRY/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
-          echo "uri=$IMAGE_URI" >> $GITHUB_OUTPUT
-          echo "Image URI: $IMAGE_URI"
-
-      - name: Deploy to EC2
-        env:
-          PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
-          IMAGE_URI: ${{ steps.image.outputs.uri }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: |
-          echo "Setting up SSH..."
-          echo "$PRIVATE_KEY" > private_key.pem
-          chmod 600 private_key.pem
-          
           python - <<'PY'
-          import os
-          key = os.environ.get('OPENAI_API_KEY', '')
-          if not key or '\n' in key or '\r' in key:
-              raise SystemExit('Configure the OPENAI_API_KEY repository secret before deployment.')
-          with open('studio.env', 'w') as handle:
-              handle.write('OPENAI_API_KEY=' + key + '\n')
-          os.chmod('studio.env', 0o600)
+          import json, pathlib, subprocess, time
+          def aws(*args):
+              return subprocess.check_output(['aws','--region','us-east-1',*args],text=True)
+          payload={'InstanceIds':['i-06e1cb3f5231e7804'],'DocumentName':'AWS-RunShellScript',
+                   'Parameters':{'commands':[pathlib.Path('scripts/deploy_studio.sh').read_text()], 'executionTimeout':['900']}}
+          pathlib.Path('command.json').write_text(json.dumps(payload))
+          command=aws('ssm','send-command','--cli-input-json','file://command.json','--query','Command.CommandId','--output','text').strip()
+          for _ in range(100):
+              time.sleep(10)
+              invocation=json.loads(aws('ssm','get-command-invocation','--instance-id','i-06e1cb3f5231e7804','--command-id',command))
+              if invocation['Status'] in ['Pending','InProgress','Delayed']: continue
+              print(invocation.get('StandardOutputContent',''))
+              print(invocation.get('StandardErrorContent',''))
+              if invocation['Status'] != 'Success': raise SystemExit('Deployment failed; inspect Systems Manager command '+command)
+              break
+          else: raise SystemExit('Timed out waiting for deployment '+command)
           PY
-          scp -o StrictHostKeyChecking=no -i private_key.pem studio.env ${{ env.EC2_USER }}@${{ env.EC2_HOST }}:~/rag-studio.env
-          echo "Deploying to EC2..."
-          ssh -o StrictHostKeyChecking=no -i private_key.pem ${{ env.EC2_USER }}@${{ env.EC2_HOST }} << 'EOF'
-            set -e
-            
-            echo "Logging into ECR..."
-            aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ steps.login-ecr.outputs.registry }}
-            
-            echo "Pulling latest image..."
-            docker pull ${{ steps.image.outputs.uri }}
-            
-            echo "Stopping and removing old container..."
-            docker stop ${{ env.CONTAINER_NAME }} 2>/dev/null || true
-            docker rm ${{ env.CONTAINER_NAME }} 2>/dev/null || true
-            
-            mkdir -p ~/rag-studio-storage
-            sudo chown 10001:10001 ~/rag-studio-storage
-            chmod 600 ~/rag-studio.env
-            echo "Starting new container..."
-            docker run -d \
-              --name ${{ env.CONTAINER_NAME }} \
-              --restart unless-stopped \
-              --env-file ~/rag-studio.env \
-              -v ~/rag-studio-storage:/app/storage \
-              -p ${{ env.HOST_PORT }}:${{ env.CONTAINER_PORT }} \
-              ${{ steps.image.outputs.uri }}
-            
-            echo "Cleaning up old images..."
-            docker image prune -af
-            
-            echo "Deployment complete!"
-            docker ps | grep ${{ env.CONTAINER_NAME }}
-          EOF
-          
-          rm -f private_key.pem studio.env
-
-      - name: Verify deployment
+      - name: Verify public Studio API
         run: |
-          echo "Waiting 15 seconds for container to start..."
-          sleep 15
-          
-          echo "Checking application health via HTTPS..."
-          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" https://rag.tchamna.com || echo "000")
-          
-          if [ "$RESPONSE" = "200" ] || [ "$RESPONSE" = "302" ]; then
-            echo "✅ Application is responding (HTTP $RESPONSE)"
-            echo "🌐 Live at: https://rag.tchamna.com"
-          else
-            echo "⚠️ HTTPS check returned HTTP $RESPONSE"
-            echo "Trying HTTP fallback..."
-            RESPONSE_HTTP=$(curl -s -o /dev/null -w "%{http_code}" http://${{ env.EC2_HOST }}:3002 || echo "000")
-            if [ "$RESPONSE_HTTP" = "200" ] || [ "$RESPONSE_HTTP" = "302" ]; then
-              echo "✅ Container is running on port 3002 (HTTP $RESPONSE_HTTP)"
-              echo "⚠️ Nginx might need restart or DNS propagation in progress"
-            else
-              echo "❌ Application not responding on port 3002 either"
-              echo "Check EC2 logs: docker logs ${{ env.CONTAINER_NAME }}"
-              exit 1
-            fi
-          fi
-
-      - name: Deployment summary
-        if: success()
-        run: |
-          echo "### 🚀 Deployment Successful!" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Image:** \`${{ steps.image.outputs.uri }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Application URL:** http://${{ env.EC2_HOST }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Container:** \`${{ env.CONTAINER_NAME }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Port Mapping:** \`${{ env.HOST_PORT }}:${{ env.CONTAINER_PORT }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Note:** Container runs on port 8080. Use Nginx on port 80 for production." >> $GITHUB_STEP_SUMMARY
+          curl --fail --retry 12 --retry-all-errors --retry-delay 5 https://rag.tchamna.com/api/generic/status | python -c "import sys,json; data=json.load(sys.stdin); assert 'retrieval' in data; print('RAG Studio online')"
