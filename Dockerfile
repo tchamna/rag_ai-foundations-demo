@@ -1,29 +1,16 @@
-FROM python:3.10-slim
-
+FROM python:3.11-slim
 WORKDIR /app
-
-# Install minimal system deps
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy requirements for better caching
-COPY light_requirements.txt ./
-
-# Install Python packages
-RUN pip install --no-cache-dir -r light_requirements.txt
-
-# Copy application code and precomputed vectorstore
-COPY src/ ./src/
-COPY vectorstore/ ./vectorstore/
-COPY data/ ./data/
-
-ENV PORT=8080
-EXPOSE ${PORT}
-
-CMD ["streamlit", "run", "src/app_streamlit.py", \
-     "--server.port", "8080", \
-     "--server.address", "0.0.0.0", \
-     "--server.headless", "true", \
-     "--server.enableCORS", "false", \
-     "--server.enableXsrfProtection", "false"]
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 HF_HOME=/opt/models
+RUN pip install --no-cache-dir torch==2.14.1 --index-url https://download.pytorch.org/whl/cpu
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
+COPY app/ ./app/
+COPY static/ ./static/
+COPY data_battery/ ./data_battery/
+RUN mkdir -p data data_generic storage && useradd --uid 10001 --create-home studio && chown -R studio:studio /app /opt/models
+USER studio
+ENV PORT=8080 RAG_ALLOWED_HOSTS=rag.tchamna.com,localhost,127.0.0.1 RAG_SECURE_COOKIES=1 RAG_PROVIDER_ORDER=openai RAG_DAILY_BUDGET_USD=0.50
+EXPOSE 8080
+HEALTHCHECK --interval=30s --start-period=90s CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/', timeout=10)"
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--proxy-headers", "--forwarded-allow-ips", "*"]

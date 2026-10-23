@@ -19,6 +19,15 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Test RAG Studio
+        run: |
+          pip install torch==2.14.1 --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements-dev.txt
+          python -m unittest discover -s tests
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:

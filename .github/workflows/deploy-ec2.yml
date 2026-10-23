@@ -26,7 +26,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           echo "Waiting for ECR workflow to complete..."
-          MAX_WAIT=600  # 10 minutes max
+          MAX_WAIT=2400  # 10 minutes max
           ELAPSED=0
           
           while [ $ELAPSED -lt $MAX_WAIT ]; do
@@ -80,11 +80,22 @@ jobs:
         env:
           PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
           IMAGE_URI: ${{ steps.image.outputs.uri }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           echo "Setting up SSH..."
           echo "$PRIVATE_KEY" > private_key.pem
           chmod 600 private_key.pem
           
+          python - <<'PY'
+          import os
+          key = os.environ.get('OPENAI_API_KEY', '')
+          if not key or '\n' in key or '\r' in key:
+              raise SystemExit('Configure the OPENAI_API_KEY repository secret before deployment.')
+          with open('studio.env', 'w') as handle:
+              handle.write('OPENAI_API_KEY=' + key + '\n')
+          os.chmod('studio.env', 0o600)
+          PY
+          scp -o StrictHostKeyChecking=no -i private_key.pem studio.env ${{ env.EC2_USER }}@${{ env.EC2_HOST }}:~/rag-studio.env
           echo "Deploying to EC2..."
           ssh -o StrictHostKeyChecking=no -i private_key.pem ${{ env.EC2_USER }}@${{ env.EC2_HOST }} << 'EOF'
             set -e
@@ -99,10 +110,15 @@ jobs:
             docker stop ${{ env.CONTAINER_NAME }} 2>/dev/null || true
             docker rm ${{ env.CONTAINER_NAME }} 2>/dev/null || true
             
+            mkdir -p ~/rag-studio-storage
+            sudo chown 10001:10001 ~/rag-studio-storage
+            chmod 600 ~/rag-studio.env
             echo "Starting new container..."
             docker run -d \
               --name ${{ env.CONTAINER_NAME }} \
               --restart unless-stopped \
+              --env-file ~/rag-studio.env \
+              -v ~/rag-studio-storage:/app/storage \
               -p ${{ env.HOST_PORT }}:${{ env.CONTAINER_PORT }} \
               ${{ steps.image.outputs.uri }}
             
@@ -113,7 +129,7 @@ jobs:
             docker ps | grep ${{ env.CONTAINER_NAME }}
           EOF
           
-          rm -f private_key.pem
+          rm -f private_key.pem studio.env
 
       - name: Verify deployment
         run: |

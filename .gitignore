@@ -26,3 +26,13 @@ assets/pitch.rtf
 
 federated.json
 *.tar
+
+# RAG Studio private runtime files
+storage/
+.env
+.env.*
+.venv/
+__pycache__/
+*.py[cod]
+data_generic/uploads/
+data_battery/uploads/

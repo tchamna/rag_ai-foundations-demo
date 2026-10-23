@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>NJ Sharing Network Knowledge Chat</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="mark compact-mark">NJ</div>
+          <div>
+            <h1>NJ Sharing Chat</h1>
+            <p>Ask NJ Sharing documents</p>
+          </div>
+        </div>
+
+        <button id="new-chat" class="new-chat" type="button"><span>+</span> New chat</button>
+        <a class="compare-link" href="/generic">Generic RAG Studio</a>
+        <a class="compare-link" href="/njsharing/compare">Compare models</a>
+        <a class="compare-link free-link" href="/njsharing/freemodels">Free models</a>
+
+        <section class="sidebar-section">
+          <h2>Add Documents</h2>
+          <label id="drop-zone" class="drop-zone">
+            <input id="file-input" type="file" multiple />
+            <strong>Drag files here</strong>
+            <span>PDF, DOCX, ODT, RTF, XLSX, CSV, JSON, TXT, MD, HTML</span>
+          </label>
+          <div id="upload-status" class="upload-status"></div>
+        </section>
+
+        <section class="sidebar-section">
+          <h2>Knowledge Base</h2>
+          <dl class="stats">
+            <div class="stat-files"><dt>Files</dt><dd id="file-count">0</dd></div>
+            <div class="stat-chunks"><dt>Chunks</dt><dd id="chunk-count">0</dd></div>
+          </dl>
+        </section>
+
+        <section class="sidebar-section">
+          <div class="section-row">
+            <h2>Documents</h2>
+            <button id="reindex" class="ghost-icon" title="Rebuild index" aria-label="Rebuild index">R</button>
+          </div>
+          <div id="sources" class="sources"></div>
+        </section>
+
+        <section class="sidebar-section">
+          <h2>Suggested</h2>
+          <div class="prompts">
+            <button data-prompt="What are the key HIPAA privacy rights described in the documents?">HIPAA privacy rights</button>
+            <button data-prompt="Summarize the HR SOP responsibilities and procedures.">HR SOP summary</button>
+            <button data-prompt="What should an employee do when they need help with a process?">Employee onboarding</button>
+          </div>
+        </section>
+
+        <section class="sidebar-section question-bank-section">
+          <div class="section-row">
+            <h2>Question Bank</h2>
+            <span id="question-count" class="small-count">0</span>
+          </div>
+          <input id="question-filter" class="question-filter" type="search" placeholder="Filter ideas..." />
+          <div id="question-bank" class="question-bank"></div>
+        </section>
+      </aside>
+
+      <section class="chat-area">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Retrieval augmented chat</p>
+            <h2>Ask NJ Sharing documents</h2>
+          </div>
+          <div id="ready-pill" class="ready-pill"><span></span>Indexing</div>
+        </header>
+
+        <div id="messages" class="messages">
+          <article class="message assistant">
+            <div class="avatar">AI</div>
+            <div class="bubble">
+              <p>Hi! Drop documents into the sidebar, then ask anything about the indexed content. Answers are synthesized from retrieved evidence with citations.</p>
+            </div>
+          </article>
+        </div>
+
+        <form id="chat-form" class="composer">
+          <div class="input-wrap">
+            <span class="input-icon">Q</span>
+            <textarea id="message-input" rows="1" placeholder="Ask about a policy, process, role, or deadline..." autocomplete="off"></textarea>
+            <button id="send" type="submit" aria-label="Send message">Send <span>^</span></button>
+          </div>
+          <p class="composer-hint">Press <kbd>Enter</kbd> to send · Responses include citations</p>
+        </form>
+      </section>
+    </main>
+
+    <template id="user-template">
+      <article class="message user">
+        <div class="bubble"></div>
+        <div class="avatar">You</div>
+      </article>
+    </template>
+
+    <template id="assistant-template">
+      <article class="message assistant">
+        <div class="avatar">AI</div>
+        <div class="bubble">
+          <p class="answer"></p>
+          <div class="citation-list"></div>
+        </div>
+      </article>
+    </template>
+
+    <div id="citation-modal" class="modal" hidden>
+      <div class="modal-backdrop" data-close-modal></div>
+      <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+        <button class="modal-close" type="button" data-close-modal aria-label="Close citation">Close</button>
+        <p id="modal-kicker" class="eyebrow"></p>
+        <h2 id="modal-title"></h2>
+        <p id="modal-location" class="modal-location"></p>
+        <div id="modal-text" class="modal-text"></div>
+      </section>
+    </div>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

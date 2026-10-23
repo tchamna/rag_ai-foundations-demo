@@ -1,0 +1,10 @@
+*
+!requirements.txt
+!app/
+!app/**
+!static/
+!static/**
+!data_battery/
+!data_battery/**
+**/__pycache__/
+**/uploads/
