@@ -374,7 +374,3 @@ def cache_key_parts(
 
 from .battery import router as battery_router
 app.include_router(battery_router)
-
-
-
-
