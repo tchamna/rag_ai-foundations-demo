@@ -6,6 +6,10 @@ on:
       - main
   workflow_dispatch:  # Allow manual trigger
 
+concurrency:
+  group: rag-studio-image-main
+  cancel-in-progress: true
+
 env:
   AWS_REGION: us-east-1
   ECR_REPOSITORY: rag-ai-demo

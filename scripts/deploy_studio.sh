@@ -20,7 +20,7 @@ Path('/opt/rag-studio/runtime.env').write_text('OPENAI_API_KEY=' + key + '\n')
 p.unlink()
 PY
 OLD=rag-ai-app-backup-$(date +%s)
-docker stop rag-ai-app
+docker stop --time 180 rag-ai-app
 docker rename rag-ai-app "$OLD"
 if docker run -d --name rag-ai-app --restart unless-stopped --env-file /opt/rag-studio/runtime.env -v /opt/rag-studio/storage:/app/storage -p 3002:8080 "$IMAGE"; then
     for i in $(seq 1 60); do
@@ -32,7 +32,7 @@ if docker run -d --name rag-ai-app --restart unless-stopped --env-file /opt/rag-
     done
 fi
 docker logs --tail 25 rag-ai-app
-docker stop rag-ai-app || true
+docker stop --time 180 rag-ai-app || true
 docker rename rag-ai-app "rag-ai-app-failed-$(date +%s)"
 docker rename "$OLD" rag-ai-app
 docker start rag-ai-app

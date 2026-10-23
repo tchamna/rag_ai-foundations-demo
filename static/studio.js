@@ -76,6 +76,7 @@ function uploadWithProgress(data, progress) {
       for (const line of lines) {
         if (!line.trim()) continue;
         let event; try { event = JSON.parse(line); } catch { continue; }
+        if (event.stage === 'heartbeat') continue;
         if (event.stage === 'error') { reject(new Error(event.detail)); continue; }
         if (event.result) result = event.result;
         else progress.update(event.stage, event.detail);
@@ -103,7 +104,12 @@ uploadFiles = async function(files) {
   const progress = createUploadProgress(list);
   progress.update('uploading', 'Transferring your files...');
   const data = new FormData(); list.forEach(file => data.append('files',file));
+  let previousSources = null;
   try {
+    try {
+      const baseline = await fetch(`${apiPrefix}/status`);
+      if (baseline.ok) previousSources = (await baseline.json()).sources;
+    } catch {}
     const result = await uploadWithProgress(data, progress);
     renderStatus(result.status);
     const accepted = result.uploaded.filter(file => file.ok);
@@ -114,8 +120,27 @@ uploadFiles = async function(files) {
       await loadQuestions();
       showDocumentQuestions(accepted.map(file => file.name), true);
       progress.finish(summary + (document.body.dataset.questionNotice ? '\n' + document.body.dataset.questionNotice : ''), document.body.dataset.questionGeneration !== 'llm');
-    } catch(error) { progress.fail('Your documents are indexed and ready to chat. Question suggestions could not be loaded. Refresh to retry.'); }
-  } catch(error) { progress.fail(error.message); }
+    } catch(error) { progress.finish('Your documents are indexed and ready to chat. Question suggestions could not be loaded. Refresh to retry.', true); }
+  } catch(error) {
+    progress.update('indexing', 'Connection lost. Checking whether your documents finished processing…');
+    let recovered = false;
+    for (let attempt = 0; attempt < 3 && !recovered; attempt++) {
+      try {
+        const response = await fetch(`${apiPrefix}/status`);
+        if (!response.ok) throw new Error('Status unavailable');
+        const status = await response.json();
+        renderStatus(status);
+        // Verify every requested file, rather than using unrelated old suggestions.
+        if (status.ready && previousSources && list.every(file => !previousSources.includes(file.name) && status.sources.includes(file.name))) {
+          recovered = true;
+          try { await loadQuestions(); showDocumentQuestions(list.map(file => file.name), true); } catch {}
+          progress.finish('Documents verified in the saved FAISS index. You can start chatting.');
+        }
+      } catch {}
+      if (!recovered && attempt < 2) await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+    if (!recovered) progress.fail('The connection was interrupted and this upload could not be confirmed. Check your document list before retrying.');
+  }
   finally { fileInput.disabled = false; reindex.disabled = false; fileInput.value = ''; }
 };
 // Keep focus inside the source dialog, and return it to the invoking control.

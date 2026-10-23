@@ -176,7 +176,11 @@ async def stream_workspace_upload(request: Request, files: list[UploadFile] = Fi
         task = asyncio.create_task(work())
         try:
             while True:
-                event = await queue.get()
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=10)
+                except asyncio.TimeoutError:
+                    yield json.dumps({"stage":"heartbeat"}) + "\n"
+                    continue
                 if event is None:
                     break
                 yield json.dumps(event) + "\n"
